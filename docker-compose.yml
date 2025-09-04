@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  ocserv:
+    build: .
+    container_name: ocserv-server
+    restart: unless-stopped
+    
+    # Network capabilities required for VPN
+    cap_add:
+      - NET_ADMIN
+    
+    # Kernel parameters for IP forwarding  
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
+    
+    # Port mapping
+    ports:
+      - "443:443/tcp"
+      - "443:443/udp"
+    
+    # Environment variables
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - VPN_SUBNET=10.20.0.0/24
+      - IPV6_FORWARD=1
+      - IPV6_NAT=0
+    
+    # Persistent storage for config
+    volumes:
+      - ./config:/etc/ocserv
+      - ./logs:/var/log/ocserv
+
+  # Optional: Watchtower for auto-updates
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --cleanup --interval 3600 ocserv-server

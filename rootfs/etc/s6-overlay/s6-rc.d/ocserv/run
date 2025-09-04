@@ -1,0 +1,6 @@
+#!/command/execlineb -P
+with-contenv
+fdmove -c 2 1
+s6-setuidgid ocserv
+/usr/sbin/ocserv --foreground --config /etc/ocserv/ocserv.conf --log-stderr
+

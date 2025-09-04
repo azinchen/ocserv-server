@@ -1,0 +1,51 @@
+#!/bin/sh
+set -eu
+
+# Default values
+VPN_SUBNET="${VPN_SUBNET:-10.10.0.0/24}"
+WAN_IF="${WAN_IF:-eth0}"
+VPN_IF="${VPN_IF:-vpns+}"
+IPV6_FORWARD="${IPV6_FORWARD:-1}"
+IPV6_NAT="${IPV6_NAT:-0}"
+IPV6_SUBNET="${IPV6_SUBNET:-fda9:4efe:7e3b:03ea::/64}"
+
+# Enable forwarding - check first, then try to set if needed
+ipv4_forward=$(cat /proc/sys/net/ipv4/ip_forward)
+if [ "$ipv4_forward" != "1" ]; then
+    if echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null; then
+        echo "IPv4 forwarding enabled"
+    else
+        echo "Warning: IPv4 forwarding disabled. Use --sysctl net.ipv4.ip_forward=1" >&2
+    fi
+fi
+
+if [ "$IPV6_FORWARD" = "1" ]; then
+    ipv6_forward=$(cat /proc/sys/net/ipv6/conf/all/forwarding)
+    if [ "$ipv6_forward" != "1" ]; then
+        if echo 1 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null; then
+            echo "IPv6 forwarding enabled"
+        else
+            echo "Warning: IPv6 forwarding disabled. Use --sysctl net.ipv6.conf.all.forwarding=1" >&2
+        fi
+    fi
+fi
+
+# IPv4 NAT
+iptables -t nat -C POSTROUTING -s "$VPN_SUBNET" -o "$WAN_IF" -j MASQUERADE 2>/dev/null || \
+    iptables -t nat -A POSTROUTING -s "$VPN_SUBNET" -o "$WAN_IF" -j MASQUERADE
+
+# IPv4 forwarding rules
+iptables -C FORWARD -i "$VPN_IF" -o "$WAN_IF" -j ACCEPT 2>/dev/null || \
+    iptables -A FORWARD -i "$VPN_IF" -o "$WAN_IF" -j ACCEPT
+iptables -C FORWARD -i "$WAN_IF" -o "$VPN_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+    iptables -A FORWARD -i "$WAN_IF" -o "$VPN_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+# IPv6 NAT (optional)
+if [ "$IPV6_NAT" = "1" ]; then
+    ip6tables -t nat -C POSTROUTING -s "$IPV6_SUBNET" -o "$WAN_IF" -j MASQUERADE 2>/dev/null || \
+        ip6tables -t nat -A POSTROUTING -s "$IPV6_SUBNET" -o "$WAN_IF" -j MASQUERADE
+    ip6tables -C FORWARD -i "$VPN_IF" -o "$WAN_IF" -j ACCEPT 2>/dev/null || \
+        ip6tables -A FORWARD -i "$VPN_IF" -o "$WAN_IF" -j ACCEPT
+    ip6tables -C FORWARD -i "$WAN_IF" -o "$VPN_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+        ip6tables -A FORWARD -i "$WAN_IF" -o "$VPN_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+fi

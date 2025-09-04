@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+# Default values
+PUID="${PUID:-911}"
+PGID="${PGID:-911}"
+SETCAP_NET_BIND="${SETCAP_NET_BIND:-1}"
+SETCAP_NET_ADMIN="${SETCAP_NET_ADMIN:-1}"
+
+# Ensure group ocserv
+if getent group ocserv >/dev/null 2>&1; then
+    current_gid=$(getent group ocserv | cut -d: -f3)
+    [ "$current_gid" = "$PGID" ] || groupmod -o -g "$PGID" ocserv
+else
+    addgroup -S -g "$PGID" ocserv
+fi
+
+# Ensure user ocserv  
+if id ocserv >/dev/null 2>&1; then
+    current_uid=$(id -u ocserv)
+    [ "$current_uid" = "$PUID" ] || usermod -o -u "$PUID" -g "$PGID" ocserv
+else
+    adduser -S -D -H -u "$PUID" -G ocserv ocserv
+fi
+
+# Create directories
+mkdir -p /run/ocserv /var/log/ocserv /var/lib/ocserv
+chown -R "$PUID:$PGID" /etc/ocserv /run/ocserv /var/log/ocserv /var/lib/ocserv || true
+
+# Set capabilities
+[ "$SETCAP_NET_BIND" = "1" ] && setcap cap_net_bind_service=+ep /usr/sbin/ocserv 2>/dev/null || true
+[ "$SETCAP_NET_ADMIN" = "1" ] && setcap cap_net_admin=+ep /usr/sbin/ocserv 2>/dev/null || true
