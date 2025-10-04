@@ -8,7 +8,7 @@ FROM alpine:3.22.1 AS ocserv-build
 ARG OCSERV_VERSION=1.3.0
 
 RUN set -eux && \
-    apk --no-cache add \
+    apk --no-cache --no-progress add \
         build-base=0.5-r3 \
         autoconf=2.72-r1 \
         automake=1.17-r1 \
@@ -22,7 +22,7 @@ RUN set -eux && \
         lz4-dev=1.10.0-r0 \
         protobuf-c-dev=1.5.2-r0 \
         linux-headers=6.14.2-r0 \
-        curl=8.14.1-r1 \
+        curl=8.14.1-r2 \
         tar=1.35-r3 \
         xz=5.8.1-r0 \
         && \
@@ -32,7 +32,8 @@ RUN set -eux && \
     ./configure --prefix=/usr --sysconfdir=/etc/ocserv --localstatedir=/var && \
     make && \
     make DESTDIR=/pkg install-strip || make DESTDIR=/pkg install && \
-    install -Dm644 doc/sample.config /pkg/etc/ocserv/ocserv.conf
+    install -Dm644 doc/sample.config /pkg/etc/ocserv/ocserv.conf && \
+    install -Dm644 doc/sample.config /pkg/usr/share/ocserv/ocserv.conf.template
 
 ############################
 # 2) Fetch s6-overlay (arch-aware)
@@ -44,8 +45,8 @@ ARG TARGETARCH
 ARG TARGETPLATFORM
 
 RUN set -eux; \
-    apk --no-cache add \
-        curl=8.14.1-r1 \
+    apk --no-cache --no-progress add \
+        curl=8.14.1-r2 \
         tar=1.35-r3 \
         xz=5.8.1-r0 \
         && \
@@ -78,16 +79,16 @@ COPY --from=ocserv-build /pkg/           /rootfs/
 ADD                      rootfs/         /rootfs/
 
 # Normalize permissions once (no chmods in final image)
-RUN chmod +x /rootfs/etc/s6-overlay/s6-rc.d/*/run && \
-    chmod +x /rootfs/etc/s6-overlay/s6-rc.d/*/finish && \
-    chmod 0644 /rootfs/etc/ocserv/ocserv.conf
+RUN chmod +x /rootfs/usr/local/bin/* && \
+    chmod +x /rootfs/etc/s6-overlay/s6-rc.d/*/run || true && \
+    chmod +x /rootfs/etc/s6-overlay/s6-rc.d/*/finish || true
 
 ############################
 # 4) Final runtime (minimal layers)
 ############################
 FROM alpine:3.22.1
 
-RUN apk --no-cache add \
+RUN apk --no-cache --no-progress add \
     gnutls=3.8.8-r0 \
     libnl3=3.11.0-r0 \
     readline=8.2.13-r1 \
@@ -95,7 +96,7 @@ RUN apk --no-cache add \
     libev=4.33-r1 \
     lz4=1.10.0-r0 \
     protobuf-c=1.5.2-r0 \
-    ca-certificates=20250619-r0 \
+    ca-certificates=20250911-r0 \
     shadow=4.17.3-r0 \
     libcap=2.76-r0 \
     iptables=1.8.11-r1
