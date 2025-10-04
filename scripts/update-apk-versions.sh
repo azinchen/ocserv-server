@@ -1,10 +1,13 @@
-#!/bin/bash
+#!/bin/sh
+# shellcheck shell=sh
 # scripts/update-apk-versions.sh
 # This script extracts package names and versions from a specified Dockerfile,
 # checks for updates from Alpine package repositories (main first, then community),
 # and updates the Dockerfile if necessary.
 # Usage: ./scripts/update-apk-versions.sh <path/to/Dockerfile>
 # If no argument is provided, it defaults to "Dockerfile" in the current directory.
+
+set -eu
 
 DOCKERFILE="${1:-Dockerfile}"
 
@@ -20,15 +23,16 @@ echo "Using Alpine branch version: $ALPINE_BRANCH"
 
 # --- 2. Extract Package List from Dockerfile ---
 joined_content=$(sed ':a;N;$!ba;s/\\\n/ /g' "$DOCKERFILE")
-package_lines=$(echo "$joined_content" | grep -oP 'apk --no-cache add\s+\K[^&]+' | sed 's/&&.*$//')
-packages=$(echo "$package_lines" | tr ' ' '\n' | sed '/^\s*$/d' | grep -v '^&&$' | sort -u)
+package_lines=$(echo "$joined_content" | grep -oP 'apk --no-cache --no-progress add\s+\K[^&]+')
+packages=$(echo "$package_lines" | tr ' ' '\n' | sed '/^\s*$/d' | sort -u)
 
 echo "Found packages in $DOCKERFILE:"
 echo "$packages"
 echo
 
 # --- 3. Function to Precisely Extract Version from HTML using AWK ---
-extract_new_version() {
+extract_new_version()
+{
     local url="$1"
     local html
     html=$(curl -s "$url")
@@ -52,7 +56,7 @@ update_package_with_tracking() {
     pkg_with_version="$1"  # e.g., tar=1.35-r2
     TOTAL_PACKAGES=$((TOTAL_PACKAGES + 1))
     
-    if [[ "$pkg_with_version" == *"="* ]]; then
+    if [ -n "$pkg_with_version" ] && [ "${pkg_with_version#*=}" != "$pkg_with_version" ]; then
         pkg=$(echo "$pkg_with_version" | cut -d'=' -f1)
         current_version=$(echo "$pkg_with_version" | cut -d'=' -f2)
     else
@@ -96,9 +100,12 @@ update_package_with_tracking() {
 }
 
 # --- 6. Loop Over All Packages and Update ---
-while IFS= read -r package; do
+IFS='
+'
+for package in $packages; do
     update_package_with_tracking "$package"
-done <<< "$packages"
+done
+unset IFS
 
 # --- 7. Output summary ---
 echo "=== UPDATE SUMMARY ==="
@@ -117,34 +124,38 @@ else
 fi
 
 # Set GitHub Actions environment variables and outputs (only if running in GitHub Actions)
-if [ -n "$GITHUB_ENV" ]; then
-    echo "TOTAL_PACKAGES=$TOTAL_PACKAGES" >> $GITHUB_ENV
-    echo "UPDATED_COUNT=$UPDATED_COUNT" >> $GITHUB_ENV
-    
-    if [ $UPDATED_COUNT -gt 0 ]; then
-        echo "PACKAGES_UPDATED<<EOF" >> $GITHUB_ENV
-        echo "$UPDATED_PACKAGES" >> $GITHUB_ENV
-        echo "EOF" >> $GITHUB_ENV
-        echo "HAS_UPDATES=true" >> $GITHUB_ENV
-    else
-        echo "PACKAGES_UPDATED=No packages needed updates" >> $GITHUB_ENV
-        echo "HAS_UPDATES=false" >> $GITHUB_ENV
-    fi
+if [ -n "${GITHUB_ENV:-}" ]; then
+    {
+        echo "TOTAL_PACKAGES=$TOTAL_PACKAGES"
+        echo "UPDATED_COUNT=$UPDATED_COUNT"
+        
+        if [ $UPDATED_COUNT -gt 0 ]; then
+            echo "PACKAGES_UPDATED<<EOF"
+            echo "$UPDATED_PACKAGES"
+            echo "EOF"
+            echo "HAS_UPDATES=true"
+        else
+            echo "PACKAGES_UPDATED=No packages needed updates"
+            echo "HAS_UPDATES=false"
+        fi
+    } >> "$GITHUB_ENV"
 fi
 
-if [ -n "$GITHUB_OUTPUT" ]; then
-    echo "total_packages=$TOTAL_PACKAGES" >> $GITHUB_OUTPUT
-    echo "updated_count=$UPDATED_COUNT" >> $GITHUB_OUTPUT
-    
-    if [ $UPDATED_COUNT -gt 0 ]; then
-        echo "packages_updated<<EOF" >> $GITHUB_OUTPUT
-        echo "$UPDATED_PACKAGES" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-        echo "has_updates=true" >> $GITHUB_OUTPUT
-    else
-        echo "packages_updated=No packages needed updates" >> $GITHUB_OUTPUT
-        echo "has_updates=false" >> $GITHUB_OUTPUT
-    fi
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    {
+        echo "total_packages=$TOTAL_PACKAGES"
+        echo "updated_count=$UPDATED_COUNT"
+        
+        if [ $UPDATED_COUNT -gt 0 ]; then
+            echo "packages_updated<<EOF"
+            echo "$UPDATED_PACKAGES"
+            echo "EOF"
+            echo "has_updates=true"
+        else
+            echo "packages_updated=No packages needed updates"
+            echo "has_updates=false"
+        fi
+    } >> "$GITHUB_OUTPUT"
 fi
 
 # Exit with appropriate code

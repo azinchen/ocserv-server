@@ -78,15 +78,9 @@ COPY --from=ocserv-build /pkg/           /rootfs/
 ADD                      rootfs/         /rootfs/
 
 # Normalize permissions once (no chmods in final image)
-RUN set -eux && \
-    chmod +x \
-        /rootfs/etc/s6-overlay/s6-rc.d/00-init-users/up \
-        /rootfs/etc/s6-overlay/s6-rc.d/00-init-users/run \
-        /rootfs/etc/s6-overlay/s6-rc.d/10-nat/up \
-        /rootfs/etc/s6-overlay/s6-rc.d/10-nat/run \
-        /rootfs/etc/s6-overlay/s6-rc.d/ocserv/run && \
-    find /rootfs/etc/s6-overlay/s6-rc.d -type d -exec chmod 0755 {} + || true && \
-    chmod 0644 /rootfs/etc/ocserv/ocserv.conf || true
+RUN chmod +x /rootfs/etc/s6-overlay/s6-rc.d/*/run && \
+    chmod +x /rootfs/etc/s6-overlay/s6-rc.d/*/finish && \
+    chmod 0644 /rootfs/etc/ocserv/ocserv.conf
 
 ############################
 # 4) Final runtime (minimal layers)
