@@ -73,14 +73,15 @@ FROM alpine:3.22.1 AS rootfs
 
 RUN mkdir -p /rootfs
 
-COPY --from=s6-fetch     /s6root/        /rootfs/
-COPY --from=ocserv-build /pkg/           /rootfs/
-ADD                      rootfs/         /rootfs/
+ADD rootfs/ /rootfs/
 
 # Normalize permissions once (no chmods in final image)
-RUN chmod +x /rootfs/usr/local/bin/* && \
+RUN chmod +x /rootfs/usr/local/bin/* || true && \
     chmod +x /rootfs/etc/s6-overlay/s6-rc.d/*/run || true && \
     chmod +x /rootfs/etc/s6-overlay/s6-rc.d/*/finish || true
+
+COPY --from=s6-fetch     /s6root/ /rootfs/
+COPY --from=ocserv-build /pkg/    /rootfs/
 
 ############################
 # 4) Final runtime (minimal layers)
