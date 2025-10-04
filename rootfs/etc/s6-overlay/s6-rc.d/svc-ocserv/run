@@ -7,5 +7,4 @@ set -eu
 
 echo "[SVC-OCSERV] Starting ocserv service"
 
-exec fdmove -c 2 1 s6-setuidgid ocserv /usr/sbin/ocserv --foreground --config /etc/ocserv/ocserv.conf --log-stderr
-
+exec fdmove -c 2 1 /usr/sbin/ocserv --foreground --config /etc/ocserv/ocserv.conf --log-stderr
