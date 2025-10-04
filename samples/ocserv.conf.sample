@@ -10,6 +10,9 @@ server-key  = /etc/ocserv/privkey.pem
 camouflage = true
 camouflage_secret = "change-me-super-secret"
 camouflage_realm = "Restricted Content"
+listen-host-is-dyndns = true
+compression = false
+cookie-timeout = 300
 
 # Clients use: https://vpn.yourdomain.com/?change-me-super-secret
 

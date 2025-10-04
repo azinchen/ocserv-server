@@ -32,7 +32,6 @@ RUN set -eux && \
     ./configure --prefix=/usr --sysconfdir=/etc/ocserv --localstatedir=/var && \
     make && \
     make DESTDIR=/pkg install-strip || make DESTDIR=/pkg install && \
-    install -Dm644 doc/sample.config /pkg/etc/ocserv/ocserv.conf && \
     install -Dm644 doc/sample.config /pkg/usr/share/ocserv/ocserv.conf.template
 
 ############################
