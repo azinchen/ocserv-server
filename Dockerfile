@@ -60,7 +60,7 @@ RUN set -eux; \
         *)              echo ""            ;; \
         esac) && \
     base="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}" && \
-    mkdir -p /s6root && \
+ENV PACKAGEVERSION="3.2.1.0"
     curl -fsSL "${base}/s6-overlay-noarch.tar.xz" | tar -C /s6root -Jx && \
     curl -fsSL "${base}/s6-overlay-${s6_arch}.tar.xz" | tar -C /s6root -Jx
 
