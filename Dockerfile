@@ -1,7 +1,7 @@
 ############################
 # 1) Build ocserv
 ############################
-FROM alpine:3.22.1 AS ocserv-build
+FROM alpine:3.22.2 AS ocserv-build
 
 ARG OCSERV_VERSION=1.3.0
 
@@ -35,7 +35,7 @@ RUN set -eux && \
 ############################
 # 2) Fetch s6-overlay (arch-aware)
 ############################
-FROM alpine:3.22.1 AS s6-fetch
+FROM alpine:3.22.2 AS s6-fetch
 
 ARG S6_OVERLAY_VERSION=3.2.1.0
 ARG TARGETARCH
@@ -67,7 +67,7 @@ RUN set -eux; \
 ############################
 # 3) Assemble rootfs (apply perms here)
 ############################
-FROM alpine:3.22.1 AS rootfs
+FROM alpine:3.22.2 AS rootfs
 
 RUN mkdir -p /rootfs
 
@@ -84,7 +84,7 @@ COPY --from=ocserv-build /pkg/    /rootfs/
 ############################
 # 4) Final runtime (minimal layers)
 ############################
-FROM alpine:3.22.1
+FROM alpine:3.22.2
 
 RUN apk --no-cache --no-progress add \
     gnutls=3.8.8-r0 \
