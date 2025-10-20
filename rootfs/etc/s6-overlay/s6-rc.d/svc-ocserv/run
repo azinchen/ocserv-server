@@ -5,6 +5,6 @@ set -eu
 
 . /usr/local/bin/backend-functions
 
-echo "[SVC-OCSERV] Starting ocserv service"
+log "[SVC-OCSERV] Starting ocserv service"
 
 exec fdmove -c 2 1 /usr/sbin/ocserv --foreground --config /etc/ocserv/ocserv.conf --log-stderr

@@ -5,13 +5,13 @@ set -eu
 
 . /usr/local/bin/backend-functions
 
-echo "[INIT-CONFIG] Ensuring ocserv configuration file exists"
+log "[INIT-CONFIG] Ensuring ocserv configuration file exists"
 
 # Create default config if missing
 if [ ! -f /etc/ocserv/ocserv.conf ]; then
     cp /usr/share/ocserv/ocserv.conf.template /etc/ocserv/ocserv.conf
-    chown "$PUID:$PGID" /etc/ocserv/ocserv.conf
-    echo "[INIT-CONFIG] Copied default config to /etc/ocserv/ocserv.conf"
+    chown "$puid:$pgid" /etc/ocserv/ocserv.conf
+    log "[INIT-CONFIG] Copied default config to /etc/ocserv/ocserv.conf"
 fi
 
-echo "[INIT-CONFIG] ocserv configuration file is present"
+log "[INIT-CONFIG] ocserv configuration file is present"

@@ -5,37 +5,37 @@ set -eu
 
 . /usr/local/bin/backend-functions
 
-echo "[INIT-ADDUSER] Setting up ocserv user and group"
+log "[INIT-ADDUSER] Setting up ocserv user and group"
 
-echo "[INIT-ADDUSER] Setting up ocserv user and group with PUID=$PUID, PGID=$PGID"
+log "[INIT-ADDUSER] Setting up ocserv user and group with PUID=$puid, PGID=$pgid"
 
 # Ensure group ocserv
 if getent group ocserv >/dev/null 2>&1; then
     current_gid=$(getent group ocserv | cut -d: -f3)
-    [ "$current_gid" = "$PGID" ] || groupmod -o -g "$PGID" ocserv
+    [ "$current_gid" = "$pgid" ] || groupmod -o -g "$pgid" ocserv
 else
-    addgroup -S -g "$PGID" ocserv
+    addgroup -S -g "$pgid" ocserv
 fi
-echo "[INIT-ADDUSER] Group ocserv configured with GID $PGID"
+log "[INIT-ADDUSER] Group ocserv configured with GID $pgid"
 
 # Ensure user ocserv  
 if id ocserv >/dev/null 2>&1; then
     current_uid=$(id -u ocserv)
-    [ "$current_uid" = "$PUID" ] || usermod -o -u "$PUID" -g "$PGID" ocserv
+    [ "$current_uid" = "$puid" ] || usermod -o -u "$puid" -g "$pgid" ocserv
 else
-    adduser -S -D -H -u "$PUID" -G ocserv ocserv
+    adduser -S -D -H -u "$puid" -G ocserv ocserv
 fi
-echo "[INIT-ADDUSER] User ocserv configured with UID $PUID"
+log "[INIT-ADDUSER] User ocserv configured with UID $puid"
 
 # Create directories
 mkdir -p /run/ocserv /var/log/ocserv /var/lib/ocserv
-echo "[INIT-ADDUSER] Created necessary directories: /run/ocserv /var/log/ocserv /var/lib/ocserv"
-chown -R "$PUID:$PGID" /etc/ocserv /run/ocserv /var/log/ocserv /var/lib/ocserv || true
-echo "[INIT-ADDUSER] Set ownership of directories to $PUID:$PGID"
+log "[INIT-ADDUSER] Created necessary directories: /run/ocserv /var/log/ocserv /var/lib/ocserv"
+chown -R "$puid:$pgid" /etc/ocserv /run/ocserv /var/log/ocserv /var/lib/ocserv || true
+log "[INIT-ADDUSER] Set ownership of directories to $puid:$pgid"
 
 # Set capabilities
-[ "$SETCAP_NET_BIND" = "1" ] && setcap cap_net_bind_service=+ep /usr/sbin/ocserv 2>/dev/null || true
-[ "$SETCAP_NET_ADMIN" = "1" ] && setcap cap_net_admin=+ep /usr/sbin/ocserv 2>/dev/null || true
-echo "[INIT-ADDUSER] Set capabilities on /usr/sbin/ocserv"
+[ "$setcap_net_bind" = "1" ] && setcap cap_net_bind_service=+ep /usr/sbin/ocserv 2>/dev/null || true
+[ "$setcap_net_admin" = "1" ] && setcap cap_net_admin=+ep /usr/sbin/ocserv 2>/dev/null || true
+log "[INIT-ADDUSER] Set capabilities on /usr/sbin/ocserv"
 
-echo "[INIT-ADDUSER] User and group setup complete"
+log "[INIT-ADDUSER] User and group setup complete"

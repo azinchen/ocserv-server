@@ -1,13 +1,22 @@
 #!/bin/sh
 # shellcheck shell=sh
 
-PUID="${PUID:-911}"
-PGID="${PGID:-911}"
-SETCAP_NET_BIND="${SETCAP_NET_BIND:-1}"
-SETCAP_NET_ADMIN="${SETCAP_NET_ADMIN:-1}"
-VPN_SUBNET="${VPN_SUBNET:-10.10.10.0/24}"
-WAN_IF="${WAN_IF:-eth0}"
-VPN_IF="${VPN_IF:-vpns+}"
-IPV6_FORWARD="${IPV6_FORWARD:-1}"
-IPV6_NAT="${IPV6_NAT:-0}"
-IPV6_SUBNET="${IPV6_SUBNET:-fda9:4efe:7e3b:03ea::/64}"
+puid="${PUID:-911}"
+pgid="${PGID:-911}"
+setcap_net_bind="${SETCAP_NET_BIND:-1}"
+setcap_net_admin="${SETCAP_NET_ADMIN:-1}"
+vpn_subnet="${VPN_SUBNET:-10.10.10.0/24}"
+wan_if="${WAN_IF:-eth0}"
+vpn_if="${VPN_IF:-vpns+}"
+ipv6_forward="${IPV6_FORWARD:-1}"
+ipv6_nat="${IPV6_NAT:-0}"
+ipv6_subnet="${IPV6_SUBNET:-fda9:4efe:7e3b:03ea::/64}"
+
+# Logging functions
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1"
+}
+
+log_error() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >&2
+}

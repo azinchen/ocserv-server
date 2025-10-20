@@ -5,52 +5,52 @@ set -eu
 
 . /usr/local/bin/backend-functions
 
-echo "[INIT-NAT] Initializing NAT and forwarding settings"
+log "[INIT-NAT] Initializing NAT and forwarding settings"
 
 # Enable forwarding - check first, then try to set if needed
 ipv4_forward=$(cat /proc/sys/net/ipv4/ip_forward)
 if [ "$ipv4_forward" != "1" ]; then
     if echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null; then
-        echo "[INIT-NAT] IPv4 forwarding enabled"
+        log "[INIT-NAT] IPv4 forwarding enabled"
     else
-        echo "[INIT-NAT] Warning: IPv4 forwarding disabled. Use --sysctl net.ipv4.ip_forward=1" >&2
+        log_error "[INIT-NAT] Warning: IPv4 forwarding disabled. Use --sysctl net.ipv4.ip_forward=1"
         sleep infinity
     fi
 fi
 
-if [ "$IPV6_FORWARD" = "1" ]; then
+if [ "$ipv6_forward" = "1" ]; then
     ipv6_forward=$(cat /proc/sys/net/ipv6/conf/all/forwarding)
     if [ "$ipv6_forward" != "1" ]; then
         if echo 1 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null; then
-            echo "[INIT-NAT] IPv6 forwarding enabled"
+            log "[INIT-NAT] IPv6 forwarding enabled"
         else
-            echo "[INIT-NAT] Warning: IPv6 forwarding disabled. Use --sysctl net.ipv6.conf.all.forwarding=1" >&2
+            log_error "[INIT-NAT] Warning: IPv6 forwarding disabled. Use --sysctl net.ipv6.conf.all.forwarding=1"
         fi
     fi
 fi
 
 # IPv4 NAT
-echo "[INIT-NAT] Setting up IPv4 NAT for subnet $VPN_SUBNET via $WAN_IF"
-iptables -t nat -C POSTROUTING -s "$VPN_SUBNET" -o "$WAN_IF" -j MASQUERADE 2>/dev/null || \
-    iptables -t nat -A POSTROUTING -s "$VPN_SUBNET" -o "$WAN_IF" -j MASQUERADE
+log "[INIT-NAT] Setting up IPv4 NAT for subnet $vpn_subnet via $wan_if"
+iptables -t nat -C POSTROUTING -s "$vpn_subnet" -o "$wan_if" -j MASQUERADE 2>/dev/null || \
+    iptables -t nat -A POSTROUTING -s "$vpn_subnet" -o "$wan_if" -j MASQUERADE
 
 # IPv4 forwarding rules
-echo "[INIT-NAT] Setting up IPv4 forwarding rules"
-iptables -C FORWARD -i "$VPN_IF" -o "$WAN_IF" -j ACCEPT 2>/dev/null || \
-    iptables -A FORWARD -i "$VPN_IF" -o "$WAN_IF" -j ACCEPT
-iptables -C FORWARD -i "$WAN_IF" -o "$VPN_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-    iptables -A FORWARD -i "$WAN_IF" -o "$VPN_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+log "[INIT-NAT] Setting up IPv4 forwarding rules"
+iptables -C FORWARD -i "$vpn_if" -o "$wan_if" -j ACCEPT 2>/dev/null || \
+    iptables -A FORWARD -i "$vpn_if" -o "$wan_if" -j ACCEPT
+iptables -C FORWARD -i "$wan_if" -o "$vpn_if" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+    iptables -A FORWARD -i "$wan_if" -o "$vpn_if" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
 # IPv6 NAT (optional)
-if [ "$IPV6_NAT" = "1" ]; then
-    echo "[INIT-NAT] Setting up IPv6 NAT for subnet $IPV6_SUBNET via $WAN_IF"
-    ip6tables -t nat -C POSTROUTING -s "$IPV6_SUBNET" -o "$WAN_IF" -j MASQUERADE 2>/dev/null || \
-        ip6tables -t nat -A POSTROUTING -s "$IPV6_SUBNET" -o "$WAN_IF" -j MASQUERADE
-    echo "[INIT-NAT] Setting up IPv6 forwarding rules"
-    ip6tables -C FORWARD -i "$VPN_IF" -o "$WAN_IF" -j ACCEPT 2>/dev/null || \
-        ip6tables -A FORWARD -i "$VPN_IF" -o "$WAN_IF" -j ACCEPT
-    ip6tables -C FORWARD -i "$WAN_IF" -o "$VPN_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-        ip6tables -A FORWARD -i "$WAN_IF" -o "$VPN_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+if [ "$ipv6_nat" = "1" ]; then
+    log "[INIT-NAT] Setting up IPv6 NAT for subnet $ipv6_subnet via $wan_if"
+    ip6tables -t nat -C POSTROUTING -s "$ipv6_subnet" -o "$wan_if" -j MASQUERADE 2>/dev/null || \
+        ip6tables -t nat -A POSTROUTING -s "$ipv6_subnet" -o "$wan_if" -j MASQUERADE
+    log "[INIT-NAT] Setting up IPv6 forwarding rules"
+    ip6tables -C FORWARD -i "$vpn_if" -o "$wan_if" -j ACCEPT 2>/dev/null || \
+        ip6tables -A FORWARD -i "$vpn_if" -o "$wan_if" -j ACCEPT
+    ip6tables -C FORWARD -i "$wan_if" -o "$vpn_if" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+        ip6tables -A FORWARD -i "$wan_if" -o "$vpn_if" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 fi
 
-echo "[INIT-NAT] NAT and forwarding setup complete"
+log "[INIT-NAT] NAT and forwarding setup complete"

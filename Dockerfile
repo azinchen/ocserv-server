@@ -38,8 +38,6 @@ RUN set -eux && \
 FROM alpine:3.22.2 AS s6-fetch
 
 ARG S6_OVERLAY_VERSION=3.2.1.0
-ARG TARGETARCH
-ARG TARGETPLATFORM
 
 RUN set -eux; \
     apk --no-cache --no-progress add \
@@ -103,18 +101,7 @@ RUN apk --no-cache --no-progress add \
 COPY --from=rootfs /rootfs/ /
 
 # Runtime knobs
-ENV PUID=911 \
-    PGID=911 \
-    UMASK=022 \
-    SETCAP_NET_BIND=1 \
-    SETCAP_NET_ADMIN=1 \
-    VPN_SUBNET=10.10.0.0/24 \
-    WAN_IF=eth0 \
-    VPN_IF=vpns+ \
-    IPV6_FORWARD=1 \
-    IPV6_NAT=0 \
-    IPV6_SUBNET=fda9:4efe:7e3b:03ea::/64 \
-    S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
+ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
 
 VOLUME ["/etc/ocserv"]
 EXPOSE 443/tcp 443/udp
