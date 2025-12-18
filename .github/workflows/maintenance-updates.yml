@@ -33,7 +33,7 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v5.0.0
+        uses: actions/checkout@v6.0.1
 
       - name: Update APK package versions
         id: update-apk
@@ -46,7 +46,7 @@ jobs:
           echo "update_date=${UPDATE_DATE}" >> $GITHUB_OUTPUT
 
       - name: Create Pull Request for APK updates
-        uses: peter-evans/create-pull-request@v7.0.8
+        uses: peter-evans/create-pull-request@v8.0.0
         with:
           branch: bot/update-apk-packages
           commit-message: "deps: update ${{ steps.update-apk.outputs.updated_count }} APK package(s) (${{ env.update_date }})"
@@ -78,7 +78,7 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v5.0.0
+        uses: actions/checkout@v4
 
       - name: Get latest version for ${{ matrix.repository }}
         id: get-version
@@ -99,8 +99,9 @@ jobs:
           sed -i "/.*${ESCAPED_SEARCH}.*/{n;s/.*/ENV PACKAGEVERSION=\"${{ env.package_version }}\"/}" Dockerfile
 
       - name: Create Pull Request for ${{ matrix.repository }}
-        uses: peter-evans/create-pull-request@v7.0.8
+        uses: peter-evans/create-pull-request@v6
         with:
+          token: ${{ secrets.PAT }}
           branch: bot/${{ env.branch_name }}
           commit-message: "deps: bump ${{ env.repo_name }} to v${{ env.package_version }}"
           delete-branch: true
@@ -127,7 +128,7 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v5.0.0
+        uses: actions/checkout@v4
 
       - name: Get latest ocserv version
         id: get-version
@@ -146,8 +147,9 @@ jobs:
           sed -i "s/ARG OCSERV_VERSION=.*/ARG OCSERV_VERSION=${{ steps.get-version.outputs.ocserv_version }}/" Dockerfile
 
       - name: Create Pull Request for ocserv update
-        uses: peter-evans/create-pull-request@v7.0.8
+        uses: peter-evans/create-pull-request@v6
         with:
+          token: ${{ secrets.PAT }}
           branch: ${{ steps.get-version.outputs.branch_name }}
           commit-message: "deps: bump ocserv to v${{ steps.get-version.outputs.ocserv_version }}"
           delete-branch: true
