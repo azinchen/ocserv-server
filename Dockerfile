@@ -48,9 +48,10 @@ RUN echo "**** install security fix packages ****" && \
     apk --no-cache --no-progress add \
         tar=1.35-r4 \
         xz=5.8.1-r0 \
+        wget \
         && \
     echo "**** create folders ****" && \
-    mkdir -p /s6 && \
+    mkdir -p /s6root && \
     echo "**** download ${PACKAGE} ****" && \
     echo "Target arch: ${TARGETARCH}${TARGETVARIANT}" && \
     # Map Docker TARGETARCH to s6-overlay architecture names
@@ -72,10 +73,10 @@ RUN echo "**** install security fix packages ****" && \
     wget -q "${s6_url_base}/s6-overlay-${s6_arch}.tar.xz" -qO /tmp/s6-overlay-binaries.tar.xz && \
     wget -q "${s6_url_base}/s6-overlay-symlinks-noarch.tar.xz" -qO /tmp/s6-overlay-symlinks-noarch.tar.xz && \
     wget -q "${s6_url_base}/s6-overlay-symlinks-arch.tar.xz" -qO /tmp/s6-overlay-symlinks-arch.tar.xz && \
-    tar -C /s6/ -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
-    tar -C /s6/ -Jxpf /tmp/s6-overlay-binaries.tar.xz && \
-    tar -C /s6/ -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz && \
-    tar -C /s6/ -Jxpf /tmp/s6-overlay-symlinks-arch.tar.xz
+    tar -C /s6root/ -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
+    tar -C /s6root/ -Jxpf /tmp/s6-overlay-binaries.tar.xz && \
+    tar -C /s6root/ -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz && \
+    tar -C /s6root/ -Jxpf /tmp/s6-overlay-symlinks-arch.tar.xz
 
 ############################
 # 3) Assemble rootfs (apply perms here)
