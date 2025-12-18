@@ -18,7 +18,7 @@ permissions:
 
 env:
   # Multi-platform builds for production (main/tags)
-  PLATFORMS: "linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/ppc64le,linux/riscv64,linux/s390x"
+  PLATFORMS: "linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/ppc64le,linux/s390x,linux/riscv64"
   # Fast builds for development branches (amd64 only)
   DEV_PLATFORMS: "linux/amd64"  # Only build for amd64 on development branches for speed
 
@@ -32,7 +32,7 @@ jobs:
     steps:
       # === VALIDATION PHASE ===
       - name: Checkout
-        uses: actions/checkout@v5.0.0
+        uses: actions/checkout@v6.0.1
 
       - name: Validate required secrets
         shell: bash
@@ -68,7 +68,7 @@ jobs:
             PUSH_TO_PROD=true
           elif [[ "$GITHUB_REF_NAME" == "main" ]]; then
             IMAGE_TAG="dev"  # Main branch tagged as 'dev'
-            PLATFORMS="${{ env.DEV_PLATFORMS }}"  # Build all platforms for main
+            PLATFORMS="${{ env.PLATFORMS }}"  # Build all platforms for main
             PUSH_TO_PROD=false
           else
             # Sanitize branch name for Docker tag (replace / and other invalid chars with -)
@@ -81,7 +81,7 @@ jobs:
           echo "is_tag=${IS_TAG}" >> $GITHUB_OUTPUT
           echo "platforms=${PLATFORMS}" >> $GITHUB_OUTPUT
           echo "push_to_prod=${PUSH_TO_PROD}" >> $GITHUB_OUTPUT
-          echo "build_date=$(date -u +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +'%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_OUTPUT
 
           echo "Action branch=${GITHUB_REF_NAME} tag=${IS_TAG} ref=${GITHUB_REF} image_tag=${IMAGE_TAG} platforms=${PLATFORMS}"
 
