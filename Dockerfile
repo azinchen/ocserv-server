@@ -103,7 +103,6 @@ FROM alpine:3.23.2
 RUN apk --no-cache --no-progress add \
     gnutls=3.8.11-r0 \
     libnl3=3.11.0-r0 \
-    readline=8.3.1-r0 \
     libseccomp=2.6.0-r1 \
     libev=4.33-r1 \
     lz4=1.10.0-r0 \
