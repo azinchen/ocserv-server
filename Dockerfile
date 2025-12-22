@@ -110,7 +110,8 @@ RUN apk --no-cache --no-progress add \
     ca-certificates=20251003-r0 \
     shadow=4.18.0-r0 \
     libcap=2.77-r0 \
-    iptables=1.8.11-r1
+    iptables=1.8.11-r1 \
+    readline=8.3.1-r0
 
 # One COPY to bring everything in
 COPY --from=rootfs /rootfs/ /
