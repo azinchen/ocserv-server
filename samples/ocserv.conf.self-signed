@@ -1,0 +1,258 @@
+# ================================================================================
+# OpenConnect VPN Server Configuration
+# Self-Signed Certificates for Testing/Development
+# ================================================================================
+#
+# USE CASE:
+# ---------
+# This configuration is designed for:
+#   - Testing and development environments
+#   - Internal/private networks
+#   - Lab setups without public domain names
+#   - Quick POC deployments
+#
+# For production use with public domains, use Let's Encrypt certificates
+# (see ocserv.conf.swag-integration sample)
+#
+# ================================================================================
+# DEPLOYMENT ARCHITECTURE
+# ================================================================================
+#
+# Directory structure:
+#
+#   ocserv-server/
+#   ├── docker-compose.yml
+#   └── volumes/
+#       └── config/
+#           ├── ocserv.conf        # This file
+#           ├── ocpasswd           # User credentials
+#           ├── server-cert.pem    # Self-signed certificate
+#           └── server-key.pem     # Private key
+#
+# ================================================================================
+# DOCKER COMPOSE SETUP
+# ================================================================================
+#
+# Example docker-compose.yml:
+#
+#   services:
+#     ocserv:
+#       image: ghcr.io/azinchen/ocserv-server:latest
+#       container_name: ocserv-vpn
+#       restart: unless-stopped
+#       cap_add:
+#         - NET_ADMIN
+#       devices:
+#         - /dev/net/tun:/dev/net/tun
+#       sysctls:
+#         - net.ipv4.ip_forward=1
+#         - net.ipv6.conf.all.forwarding=1
+#       ports:
+#         - 8443:443/tcp
+#         - 8443:443/udp
+#       environment:
+#         - PUID=1000
+#         - PGID=1000
+#         - VPN_SUBNET=10.99.0.0/24
+#         - IPV6_FORWARD=1
+#         - IPV6_NAT=0
+#       volumes:
+#         - /etc/localtime:/etc/localtime:ro
+#         - /etc/timezone:/etc/timezone:ro
+#         - ./volumes/config:/etc/ocserv
+#
+# ================================================================================
+# CAMOUFLAGE MODE
+# ================================================================================
+#
+# This VPN uses camouflage mode to hide as a regular HTTPS server,
+# helping bypass censorship and deep packet inspection (DPI).
+#
+# Clients MUST append the secret to the connection URL:
+#   https://192.168.1.100:8443/?your-secret-here
+#
+# To disable camouflage mode, set camouflage = false in the configuration.
+#
+# ================================================================================
+# CERTIFICATE GENERATION
+# ================================================================================
+#
+# Self-signed certificates MUST include Subject Alternative Names (SAN) for
+# the IP addresses or hostnames clients will use to connect.
+#
+# Step 1: Create OpenSSL Configuration File (san.conf)
+# -----------------------------------------------------
+# cat > san.conf << 'SSLCONF'
+# [req]
+# default_bits = 2048
+# distinguished_name = req_distinguished_name
+# req_extensions = v3_req
+# x509_extensions = v3_req
+# prompt = no
+#
+# [req_distinguished_name]
+# C = US
+# ST = State
+# L = City
+# O = Organization
+# CN = vpn.local
+#
+# [v3_req]
+# keyUsage = keyEncipherment, dataEncipherment
+# extendedKeyUsage = serverAuth
+# subjectAltName = @alt_names
+#
+# [alt_names]
+# # Add your server's IP addresses and hostnames
+# IP.1 = 192.168.1.100
+# IP.2 = 127.0.0.1
+# DNS.1 = vpn.local
+# DNS.2 = localhost
+# SSLCONF
+#
+# Step 2: Generate Certificate and Key
+# -------------------------------------
+# openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+#   -keyout server-key.pem -out server-cert.pem \
+#   -config san.conf
+#
+# chmod 600 server-key.pem
+# chmod 644 server-cert.pem
+#
+# Step 3: Verify SAN Is Included
+# -------------------------------
+# openssl x509 -in server-cert.pem -noout -text | grep -A2 "Subject Alternative"
+#
+# Output should show:
+#   X509v3 Subject Alternative Name:
+#       IP Address:192.168.1.100, IP Address:127.0.0.1, DNS:vpn.local, DNS:localhost
+#
+# Step 4: Get Certificate Fingerprint for Client
+# -----------------------------------------------
+# openssl x509 -in server-cert.pem -pubkey -noout | \
+#   openssl pkey -pubin -outform der | \
+#   openssl dgst -sha256 -binary | base64
+#
+# Example output: m6iPRred3zGCYkOIa2aHUiFf6rAWpQP4oIGcC7YLrEY=
+#
+# ================================================================================
+# USER MANAGEMENT
+# ================================================================================
+#
+# Create VPN users using the ocpasswd tool inside the container:
+#
+#   docker exec -it ocserv-vpn ocpasswd -c /etc/ocserv/ocpasswd username
+#
+# The command will prompt for a password. To delete a user:
+#
+#   docker exec -it ocserv-vpn ocpasswd -c /etc/ocserv/ocpasswd -d username
+#
+# To list all users:
+#
+#   docker exec -it ocserv-vpn cat /etc/ocserv/ocpasswd
+#
+# ================================================================================
+# CLIENT CONNECTION
+# ================================================================================
+#
+# OpenConnect clients connecting to servers with self-signed certificates
+# must use the --servercert flag with the certificate pin:
+#
+# echo "password" | sudo openconnect \
+#   --servercert pin-sha256:m6iPRred3zGCYkOIa2aHUiFf6rAWpQP4oIGcC7YLrEY= \
+#   --user username \
+#   --passwd-on-stdin \
+#   "https://192.168.1.100:8443/?your-secret-here"
+#
+# Alternative (less secure, accepts any cert):
+# echo "password" | sudo openconnect \
+#   --no-cert-check \
+#   --user username \
+#   --passwd-on-stdin \
+#   "https://192.168.1.100:8443/?your-secret-here"
+#
+# ================================================================================
+# TESTED FEATURES
+# ================================================================================
+#
+# ✓ Full tunnel VPN (all traffic routed through VPN)
+# ✓ Kill-switch functionality (no leaks when disconnected)
+# ✓ DNS push to clients (8.8.8.8, 1.1.1.1)
+# ✓ IPv4 support with predictable IP assignment
+# ✓ Stateful firewall with NAT masquerading
+# ✓ TLS 1.2+ encryption (AES-256-GCM)
+# ✓ Cisco AnyConnect compatibility
+# ✓ OpenConnect client support (Linux, macOS, Windows)
+# ✓ Camouflage mode (DPI bypass)
+#
+# ================================================================================
+
+# --- Ports ---
+tcp-port = 443
+udp-port = 443
+
+# --- Certificates (Self-Signed) ---
+server-cert = /etc/ocserv/server-cert.pem
+server-key  = /etc/ocserv/server-key.pem
+
+# --- Camouflage / hidden service ---
+# Hides VPN server as regular HTTPS server to bypass censorship/firewalls
+# Clients must append the secret to the URL: https://192.168.1.100:8443/?your-secret-here
+camouflage = true
+camouflage_secret = "change-me-super-secret-32chars-minimum-recommended"
+camouflage_realm = "Restricted Content"
+compression = false
+cookie-timeout = 300
+
+# --- Auth (local password file) ---
+auth = "plain[passwd=/etc/ocserv/ocpasswd]"
+
+# --- Device & addressing ---
+device = vpns
+ipv4-network = 10.99.0.0
+ipv4-netmask = 255.255.255.0
+
+# --- Full-tunnel routes ---
+route = default
+
+# --- Client DNS ---
+dns = 8.8.8.8
+dns = 1.1.1.1
+
+# --- DTLS Configuration ---
+# DTLS provides UDP-based transport for better performance
+# Disable if experiencing issues in Docker/container environments:
+# no-dtls = true
+
+# --- Session/transport basics ---
+try-mtu-discovery = true
+dpd = 90
+mobile-dpd = 180
+keepalive = 300
+isolate-workers = true
+
+# --- Runtime files ---
+pid-file    = /run/ocserv/ocserv.pid
+socket-file = /run/ocserv/ocserv.socket
+
+# --- Admin/control socket ---
+use-occtl = true
+occtl-socket-file = /var/run/occtl.socket
+
+# --- Privilege separation ---
+run-as-user = nobody
+run-as-group = daemon
+
+# --- Session limits ---
+max-clients = 16
+max-same-clients = 2
+auth-timeout = 240
+idle-timeout = 0
+
+# --- Security & compatibility ---
+cisco-client-compat = true
+predictable-ips = true
+deny-roaming = false
+
+# --- Banner message ---
+banner = "Welcome to OpenConnect VPN Server"

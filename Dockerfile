@@ -48,7 +48,7 @@ RUN echo "**** install security fix packages ****" && \
     apk --no-cache --no-progress add \
         tar=1.35-r4 \
         xz=5.8.1-r0 \
-        wget \
+        wget=1.25.0-r2 \
         && \
     echo "**** create folders ****" && \
     mkdir -p /s6root && \
@@ -105,7 +105,7 @@ RUN apk --no-cache --no-progress add \
     libnl3=3.11.0-r0 \
     libseccomp=2.6.0-r1 \
     libev=4.33-r1 \
-    lz4=1.10.0-r0 \
+    lz4-libs=1.10.0-r0 \
     protobuf-c=1.5.2-r2 \
     ca-certificates=20251003-r0 \
     shadow=4.18.0-r0 \

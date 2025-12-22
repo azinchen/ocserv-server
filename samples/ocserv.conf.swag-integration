@@ -1,0 +1,229 @@
+# ================================================================================
+# OpenConnect VPN Server Configuration
+# Integration with SWAG (Secure Web Application Gateway) Reverse Proxy
+# ================================================================================
+#
+# USE CASE:
+# ---------
+# This configuration is designed for:
+#   - Production deployments with reverse proxy setup
+#   - Let's Encrypt certificate automation via SWAG
+#   - Multi-service environments sharing a single domain/IP
+#   - Centralized certificate management
+#   - Integration with existing SWAG/LinuxServer.io infrastructure
+#
+# For standalone deployments, see: ocserv.conf.basic
+# For testing with self-signed certs, see: ocserv.conf.self-signed
+#
+# ================================================================================
+# DEPLOYMENT ARCHITECTURE
+# ================================================================================
+#
+# This configuration assumes the following directory structure:
+#
+#   /path/to/
+#   ├── ocserv-server/              # This folder (VPN server)
+#   │   ├── docker-compose.yml
+#   │   └── volumes/
+#   │       └── config/
+#   │           ├── ocserv.conf     # This file
+#   │           └── ocpasswd        # User credentials
+#   │
+#   └── reverse-proxy/              # SWAG container
+#       ├── docker-compose.yml
+#       └── volumes/
+#           └── swag-config/
+#               └── etc/letsencrypt/
+#                   └── live/vpn.example.com/
+#                       ├── fullchain.pem
+#                       └── privkey.pem
+#
+# ================================================================================
+# DOCKER COMPOSE SETUP
+# ================================================================================
+#
+# The ocserv container should be configured with:
+#   - External network: reverse-proxy-network (shared with SWAG)
+#   - Port mapping: 8443:443 (or your preferred port)
+#   - TUN device access: /dev/net/tun (required for VPN tunnel)
+#   - SWAG config mounted at: /swag-config:ro (read-only)
+#
+# Example docker-compose.yml:
+#
+#   services:
+#     ocserv:
+#       image: ghcr.io/azinchen/ocserv-server:latest
+#       restart: unless-stopped
+#       cap_add:
+#         - NET_ADMIN
+#       devices:
+#         - /dev/net/tun:/dev/net/tun
+#       sysctls:
+#         - net.ipv4.ip_forward=1
+#         - net.ipv6.conf.all.forwarding=1
+#       ports:
+#         - 8443:443/tcp
+#         - 8443:443/udp
+#       environment:
+#         - PUID=911
+#         - PGID=911
+#         - VPN_SUBNET=10.20.0.0/24
+#         - IPV6_FORWARD=1
+#         - IPV6_NAT=0
+#       volumes:
+#         - /etc/localtime:/etc/localtime:ro
+#         - /etc/timezone:/etc/timezone:ro
+#         - ./volumes/config:/etc/ocserv
+#         - ../reverse-proxy/volumes/swag-config:/swag-config:ro
+#       networks:
+#         - reverse-proxy-network
+#
+#   networks:
+#     reverse-proxy-network:
+#       external: true
+#
+# ================================================================================
+# CERTIFICATES
+# ================================================================================
+#
+# This configuration uses Let's Encrypt certificates from SWAG.
+# Ensure SWAG has generated certificates for your VPN domain.
+# 
+# Update the paths below to match your domain:
+#   server-cert = /swag-config/etc/letsencrypt/live/vpn.example.com/fullchain.pem
+#   server-key  = /swag-config/etc/letsencrypt/live/vpn.example.com/privkey.pem
+#
+# ================================================================================
+# CAMOUFLAGE MODE
+# ================================================================================
+#
+# This VPN uses camouflage mode to hide as a regular HTTPS server,
+# helping bypass censorship and deep packet inspection (DPI).
+#
+# Clients MUST append the secret to the connection URL:
+#   https://vpn.example.com:8443/?your-secret-here
+#
+# ================================================================================
+# USER MANAGEMENT
+# ================================================================================
+#
+# Create VPN users using the ocpasswd tool inside the container:
+#
+#   docker exec -it ocserv-server ocpasswd -c /etc/ocserv/ocpasswd username
+#
+# The command will prompt for a password. To delete a user:
+#
+#   docker exec -it ocserv-server ocpasswd -c /etc/ocserv/ocpasswd -d username
+#
+# To list all users:
+#
+#   docker exec -it ocserv-server cat /etc/ocserv/ocpasswd
+#
+# ================================================================================
+# CLIENT CONNECTION
+# ================================================================================
+#
+# Connect using the OpenConnect client with your domain and camouflage secret:
+#
+#   sudo openconnect https://vpn.example.com:8443/?your-secret-here --user=username
+#
+# The client will prompt for your password. For automated connections:
+#
+#   echo "password" | sudo openconnect https://vpn.example.com:8443/?your-secret-here \
+#     --user=username --passwd-on-stdin
+#
+# For AnyConnect clients (Cisco, etc):
+#   - Server: https://vpn.example.com:8443/?your-secret-here
+#   - Username: your username from ocpasswd
+#   - Password: your password from ocpasswd
+#
+# ================================================================================
+# TESTED FEATURES
+# ================================================================================
+#
+# ✓ Full tunnel VPN (all traffic routed through VPN)
+# ✓ Kill-switch functionality (no leaks when disconnected)
+# ✓ DNS push to clients
+# ✓ IPv4 and IPv6 support
+# ✓ Stateful firewall with NAT masquerading
+# ✓ TLS 1.2+ encryption
+# ✓ Cisco AnyConnect compatibility
+# ✓ OpenConnect client support
+#
+# ================================================================================
+
+# --- Ports ---
+tcp-port = 443
+udp-port = 443
+
+# --- Certificates (Let's Encrypt from SWAG) ---
+# IMPORTANT: Update 'vpn.example.com' with your actual domain
+server-cert = /swag-config/etc/letsencrypt/live/vpn.example.com/fullchain.pem
+server-key  = /swag-config/etc/letsencrypt/live/vpn.example.com/privkey.pem
+
+# --- Camouflage / hidden service (1.3.0 supports realm) ---
+# Hides VPN server as regular HTTPS server to bypass censorship/firewalls
+# Clients must append the secret to the URL: https://vpn.example.com:8443/?your-secret-here
+camouflage = true
+camouflage_secret = "change-me-super-secret-32chars-minimum-recommended"
+camouflage_realm = "Restricted Content"
+compression = false
+cookie-timeout = 300
+
+# --- Auth (local password file) ---
+# Create users with: docker exec ocserv ocpasswd -c /etc/ocserv/ocpasswd username
+auth = "plain[passwd=/etc/ocserv/ocpasswd]"
+
+# --- Device & addressing ---
+device = vpns
+ipv4-network = 10.20.0.0
+ipv4-netmask = 255.255.255.0
+ipv6-network = fda9:4efe:7e3b:03ea::/64
+
+# --- Full-tunnel routes ---
+route = default
+route = ::/0
+
+# --- Client DNS ---
+dns = 1.1.1.1
+dns = 9.9.9.9
+dns = 2606:4700:4700::1111
+dns = 2620:fe::9
+
+# --- Session/transport basics ---
+try-mtu-discovery = true
+dpd = 90
+mobile-dpd = 180
+keepalive = 300
+isolate-workers = true
+
+# --- DTLS Configuration ---
+# DTLS provides UDP-based transport for better performance
+# Disable if experiencing issues in Docker/container environments:
+# no-dtls = true
+
+# --- Runtime files (match container/service) ---
+pid-file    = /run/ocserv/ocserv.pid
+socket-file = /run/ocserv/ocserv.socket
+
+# --- Admin/control socket ---
+use-occtl = true
+occtl-socket-file = /var/run/occtl.socket
+
+# --- Privilege separation ---
+run-as-user = nobody
+run-as-group = daemon
+
+# --- Session limits ---
+max-clients = 16
+max-same-clients = 2
+auth-timeout = 240
+idle-timeout = 0
+
+# --- Security & compatibility ---
+cisco-client-compat = true
+predictable-ips = true
+deny-roaming = false
+
+# --- Banner message ---
+banner = "Welcome to OpenConnect VPN Server"
