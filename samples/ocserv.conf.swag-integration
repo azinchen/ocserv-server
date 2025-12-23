@@ -65,8 +65,6 @@
 #         - 8443:443/tcp
 #         - 8443:443/udp
 #       environment:
-#         - PUID=911
-#         - PGID=911
 #         - VPN_SUBNET=10.20.0.0/24
 #         - IPV6_FORWARD=1
 #         - IPV6_NAT=0
@@ -92,6 +90,23 @@
 # Update the paths below to match your domain:
 #   server-cert = /swag-config/etc/letsencrypt/live/vpn.example.com/fullchain.pem
 #   server-key  = /swag-config/etc/letsencrypt/live/vpn.example.com/privkey.pem
+#
+# AUTOMATIC CERTIFICATE RENEWAL:
+# -------------------------------
+# When SWAG renews Let's Encrypt certificates, OCServ must be restarted to load
+# the new certificates. Add a renewal hook to SWAG:
+#
+# Create file: /path/to/reverse-proxy/volumes/swag-config/etc/letsencrypt/renewal-hooks/post/restart-ocserv.sh
+#
+#   #!/bin/bash
+#   docker restart ocserv-server
+#
+# Make it executable:
+#   chmod +x /path/to/reverse-proxy/volumes/swag-config/etc/letsencrypt/renewal-hooks/post/restart-ocserv.sh
+#
+# This hook runs after successful certificate renewal and automatically restarts
+# OCServ to load the new certificates. Active VPN connections will be dropped
+# briefly during restart.
 #
 # ================================================================================
 # CAMOUFLAGE MODE

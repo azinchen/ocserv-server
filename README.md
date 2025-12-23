@@ -19,8 +19,6 @@ docker run -d \
   --sysctl net.ipv6.conf.all.forwarding=1 \
   -p 443:443/tcp \
   -p 443:443/udp \
-  -e PUID=1000 \
-  -e PGID=1000 \
   -e VPN_SUBNET=10.20.0.0/24 \
   -v ./config:/etc/ocserv \
   ocserv-server:latest
@@ -30,8 +28,6 @@ docker run -d \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PUID` | `911` | User ID for ocserv process |
-| `PGID` | `911` | Group ID for ocserv process |
 | `VPN_SUBNET` | `10.10.0.0/24` | VPN client subnet |
 | `WAN_IF` | `eth0` | WAN interface for NAT |
 | `VPN_IF` | `vpns+` | VPN interface pattern |

@@ -51,8 +51,6 @@
 #         - 8443:443/tcp
 #         - 8443:443/udp
 #       environment:
-#         - PUID=1000
-#         - PGID=1000
 #         - VPN_SUBNET=10.99.0.0/24
 #         - IPV6_FORWARD=1
 #         - IPV6_NAT=0

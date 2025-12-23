@@ -1,8 +1,6 @@
 #!/bin/sh
 # shellcheck shell=sh
 
-puid="${PUID:-911}"
-pgid="${PGID:-911}"
 setcap_net_bind="${SETCAP_NET_BIND:-1}"
 setcap_net_admin="${SETCAP_NET_ADMIN:-1}"
 vpn_subnet="${VPN_SUBNET:-10.10.10.0/24}"

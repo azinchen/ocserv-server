@@ -7,4 +7,8 @@ set -eu
 
 log "[SVC-OCSERV] Starting ocserv service"
 
+# Ensure runtime directories exist
+mkdir -p /run/ocserv /var/log/ocserv /var/lib/ocserv || true
+chmod 0755 /run/ocserv /var/log/ocserv /var/lib/ocserv || true
+
 exec fdmove -c 2 1 /usr/sbin/ocserv --foreground --config /etc/ocserv/ocserv.conf --log-stderr
