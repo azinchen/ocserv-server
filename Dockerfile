@@ -100,6 +100,23 @@ COPY --from=ocserv-build /pkg/    /rootfs/
 ############################
 FROM alpine:3.23.2
 
+ARG IMAGE_VERSION=N/A \
+    BUILD_DATE=N/A \
+    OCSERV_VERSION=1.3.0
+
+LABEL org.opencontainers.image.title="OpenConnect VPN Server (ocserv) Docker container" \
+      org.opencontainers.image.description="OpenConnect VPN Server (ocserv) in a Docker container with s6-overlay" \
+      org.opencontainers.image.authors="Alexander Zinchenko <alexander@zinchenko.com>" \
+      org.opencontainers.image.url="https://github.com/azinchen/ocserv-server" \
+      org.opencontainers.image.source="https://github.com/azinchen/ocserv-server" \
+      org.opencontainers.image.vendor="Alexander Zinchenko <alexander@zinchenko.com>" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      com.ocserv.version="${OCSERV_VERSION}" \
+      com.ocserv.url="https://www.infradead.org/ocserv/" \
+      com.ocserv.documentation="https://ocserv.gitlab.io/www/manual.html"
+
 RUN apk --no-cache --no-progress add \
     gnutls=3.8.11-r0 \
     libnl3=3.11.0-r0 \
