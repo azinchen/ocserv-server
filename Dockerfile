@@ -22,7 +22,7 @@ RUN set -eux && \
         linux-headers=6.16.12-r0 \
         curl=8.17.0-r1 \
         tar=1.35-r4 \
-        xz=5.8.1-r0 \
+        xz=5.8.2-r0 \
         && \
     curl -fsSL "https://www.infradead.org/ocserv/download/ocserv-${OCSERV_VERSION}.tar.xz" -o /tmp/ocserv.tar.xz && \
     tar -C /tmp -xf /tmp/ocserv.tar.xz && \
@@ -47,7 +47,7 @@ RUN echo "**** install security fix packages ****" && \
     echo "**** install mandatory packages ****" && \
     apk --no-cache --no-progress add \
         tar=1.35-r4 \
-        xz=5.8.1-r0 \
+        xz=5.8.2-r0 \
         wget=1.25.0-r2 \
         && \
     echo "**** create folders ****" && \
