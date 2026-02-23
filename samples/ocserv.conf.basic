@@ -127,7 +127,7 @@ udp-port = 443
 server-cert = /etc/ocserv/fullchain.pem
 server-key  = /etc/ocserv/privkey.pem
 
-# --- Camouflage / hidden service (1.3.0 supports realm) ---
+# --- Camouflage / hidden service (1.3.0+ supports realm) ---
 # Hides VPN server as regular HTTPS server to bypass censorship/firewalls
 # Clients must append the secret to the URL: https://vpn.example.com/?your-secret-here
 camouflage = true

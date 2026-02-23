@@ -176,7 +176,7 @@ udp-port = 443
 server-cert = /swag-config/etc/letsencrypt/live/vpn.example.com/fullchain.pem
 server-key  = /swag-config/etc/letsencrypt/live/vpn.example.com/privkey.pem
 
-# --- Camouflage / hidden service (1.3.0 supports realm) ---
+# --- Camouflage / hidden service (1.3.0+ supports realm) ---
 # Hides VPN server as regular HTTPS server to bypass censorship/firewalls
 # Clients must append the secret to the URL: https://vpn.example.com:8443/?your-secret-here
 camouflage = true
