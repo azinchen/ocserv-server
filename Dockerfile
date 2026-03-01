@@ -3,7 +3,7 @@
 ############################
 FROM alpine:3.23.3 AS ocserv-build
 
-ARG OCSERV_VERSION=1.4.0
+ARG OCSERV_VERSION=1.4.1
 
 RUN set -eux && \
     apk --no-cache --no-progress add \
@@ -102,7 +102,7 @@ FROM alpine:3.23.3
 
 ARG IMAGE_VERSION=N/A \
     BUILD_DATE=N/A \
-    OCSERV_VERSION=1.4.0
+    OCSERV_VERSION=1.4.1
 
 LABEL org.opencontainers.image.title="OpenConnect VPN Server (ocserv) Docker container" \
       org.opencontainers.image.description="OpenConnect VPN Server (ocserv) in a Docker container with s6-overlay" \
