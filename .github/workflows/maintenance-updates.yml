@@ -47,7 +47,7 @@ jobs:
           echo "update_date=${UPDATE_DATE}" >> $GITHUB_OUTPUT
 
       - name: Create Pull Request for APK updates
-        uses: peter-evans/create-pull-request@v8.1.0
+        uses: peter-evans/create-pull-request@v8.1.1
         with:
           token: ${{ secrets.PR_PAT }}
           branch: bot/update-apk-packages
@@ -107,7 +107,7 @@ jobs:
           sed -i -E "s/(\*\*Init\*\*: s6-overlay )[^ ]*/\1${{ env.package_version }}/" README.md
 
       - name: Create Pull Request for ${{ matrix.repository }}
-        uses: peter-evans/create-pull-request@v8.1.0
+        uses: peter-evans/create-pull-request@v8.1.1
         with:
           token: ${{ secrets.PR_PAT }}
           branch: bot/${{ env.branch_name }}
@@ -163,7 +163,7 @@ jobs:
           sed -i -E "s/(\*\*VPN\*\*: ocserv )[^ ]*/\1${{ steps.get-version.outputs.ocserv_version }}/" README.md
 
       - name: Create Pull Request for ocserv update
-        uses: peter-evans/create-pull-request@v8.1.0
+        uses: peter-evans/create-pull-request@v8.1.1
         with:
           token: ${{ secrets.PR_PAT }}
           branch: ${{ steps.get-version.outputs.branch_name }}
@@ -255,7 +255,7 @@ jobs:
 
       - name: Create Pull Request for Alpine bump
         if: steps.update-dockerfile.outputs.updated == 'true'
-        uses: peter-evans/create-pull-request@v8.1.0
+        uses: peter-evans/create-pull-request@v8.1.1
         with:
           token: ${{ secrets.PR_PAT }}
           branch: bot/update-alpine
