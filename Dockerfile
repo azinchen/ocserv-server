@@ -124,7 +124,7 @@ RUN apk --no-cache --no-progress add \
     libev=4.33-r1 \
     lz4-libs=1.10.0-r0 \
     protobuf-c=1.5.2-r2 \
-    ca-certificates=20251003-r0 \
+    ca-certificates=20260413-r0 \
     shadow=4.18.0-r0 \
     libcap=2.78-r0 \
     iptables=1.8.11-r1 \
