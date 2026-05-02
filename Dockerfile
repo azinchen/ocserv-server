@@ -12,7 +12,7 @@ RUN set -eux && \
         automake=1.18.1-r0 \
         libtool=2.5.4-r2 \
         pkgconf=2.5.1-r0 \
-        gnutls-dev=3.8.12-r0 \
+        gnutls-dev=3.8.13-r0 \
         readline-dev=8.3.1-r0 \
         libseccomp-dev=2.6.0-r1 \
         libnl3-dev=3.11.0-r0 \
@@ -22,7 +22,7 @@ RUN set -eux && \
         linux-headers=6.16.12-r0 \
         curl=8.17.0-r1 \
         tar=1.35-r4 \
-        xz=5.8.2-r0 \
+        xz=5.8.3-r0 \
         && \
     curl -fsSL "https://www.infradead.org/ocserv/download/ocserv-${OCSERV_VERSION}.tar.xz" -o /tmp/ocserv.tar.xz && \
     tar -C /tmp -xf /tmp/ocserv.tar.xz && \
@@ -47,7 +47,7 @@ RUN echo "**** install security fix packages ****" && \
     echo "**** install mandatory packages ****" && \
     apk --no-cache --no-progress add \
         tar=1.35-r4 \
-        xz=5.8.2-r0 \
+        xz=5.8.3-r0 \
         wget=1.25.0-r2 \
         && \
     echo "**** create folders ****" && \
@@ -118,7 +118,7 @@ LABEL org.opencontainers.image.title="OpenConnect VPN Server (ocserv) Docker con
       com.ocserv.documentation="https://ocserv.gitlab.io/www/manual.html"
 
 RUN apk --no-cache --no-progress add \
-    gnutls=3.8.12-r0 \
+    gnutls=3.8.13-r0 \
     libnl3=3.11.0-r0 \
     libseccomp=2.6.0-r1 \
     libev=4.33-r1 \
