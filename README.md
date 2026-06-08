@@ -117,5 +117,5 @@ docker build -t ocserv-server .
 
 - **Base**: Alpine Linux 3.23.4
 - **Init**: s6-overlay 3.2.3.0
-- **VPN**: ocserv 1.4.2
+- **VPN**: ocserv 1.5.0
 - **Networking**: iptables with NAT support
