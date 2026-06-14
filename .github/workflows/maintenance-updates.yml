@@ -98,7 +98,7 @@ jobs:
         shell: bash
         run: |
           ESCAPED_SEARCH=$(printf '%s\n' "${{ matrix.repository }}" | sed -e 's/[\/&]/\\&/g')
-          sed -i "/.*${ESCAPED_SEARCH}.*/{n;s/.*/ENV PACKAGEVERSION=\"${{ env.package_version }}\"/}" Dockerfile
+          sed -i "/.*${ESCAPED_SEARCH}.*/{n;s/.*/ARG PACKAGEVERSION=\"${{ env.package_version }}\"/}" Dockerfile
 
       - name: Update README.md with new version
         shell: bash

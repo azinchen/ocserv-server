@@ -40,8 +40,8 @@ FROM alpine:3.23.4 AS s6-fetch
 ARG TARGETARCH
 ARG TARGETVARIANT
 
-ENV PACKAGE="just-containers/s6-overlay"
-ENV PACKAGEVERSION="3.2.3.0"
+ARG PACKAGE="just-containers/s6-overlay"
+ARG PACKAGEVERSION="3.2.3.0"
 
 RUN echo "**** install security fix packages ****" && \
     echo "**** install mandatory packages ****" && \
