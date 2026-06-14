@@ -38,7 +38,7 @@ docker run -d \
 ## Required Docker Settings
 
 ### Capabilities
-- `--cap-add=NET_ADMIN` - Required for iptables rules
+- `--cap-add=NET_ADMIN` - Required for nftables rules
 
 ### Devices
 - `--device /dev/net/tun:/dev/net/tun` - Required for TUN interface access
@@ -118,4 +118,4 @@ docker build -t ocserv-server .
 - **Base**: Alpine Linux 3.24.0
 - **Init**: s6-overlay 3.2.3.0
 - **VPN**: ocserv 1.5.0
-- **Networking**: iptables with NAT support
+- **Networking**: nftables with NAT support

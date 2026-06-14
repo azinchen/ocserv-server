@@ -8,12 +8,14 @@ ARG OCSERV_VERSION=1.5.0
 RUN set -eux && \
     apk --no-cache --no-progress add \
         build-base=0.5-r4 \
-        autoconf=2.73-r0 \
-        automake=1.18.1-r1 \
-        libtool=2.6.0-r1 \
+        meson=1.11.1-r0 \
+        samurai=1.2-r8 \
+        gperf=3.3-r0 \
         pkgconf=2.5.1-r0 \
         gnutls-dev=3.8.13-r0 \
         readline-dev=8.3.3-r1 \
+        libtasn1-dev=4.21.0-r0 \
+        talloc-dev=2.4.4-r1 \
         libseccomp-dev=2.6.0-r2 \
         libnl3-dev=3.11.0-r0 \
         libev-dev=4.33-r1 \
@@ -27,10 +29,15 @@ RUN set -eux && \
     curl -fsSL "https://www.infradead.org/ocserv/download/ocserv-${OCSERV_VERSION}.tar.xz" -o /tmp/ocserv.tar.xz && \
     tar -C /tmp -xf /tmp/ocserv.tar.xz && \
     cd /tmp/ocserv-* && \
-    ./configure --prefix=/usr --sysconfdir=/etc/ocserv --localstatedir=/var && \
-    make && \
-    make DESTDIR=/pkg install-strip || make DESTDIR=/pkg install && \
-    install -Dm644 doc/sample.config /pkg/usr/share/ocserv/ocserv.conf.template
+    meson setup builddir --prefix=/usr --sysconfdir=/etc/ocserv --localstatedir=/var --buildtype=release -Dfirewall-script=nftables && \
+    ninja -C builddir && \
+    DESTDIR=/pkg meson install -C builddir --no-rebuild && \
+    install -Dm644 doc/sample.config /pkg/usr/share/ocserv/ocserv.conf.template && \
+    sed -i \
+        -e 's#^server-cert = .*#server-cert = /etc/ocserv/server-cert.pem#' \
+        -e 's#^server-key = .*#server-key = /etc/ocserv/server-key.pem#' \
+        -e 's#^ca-cert = .*#ca-cert = /etc/ocserv/ca.pem#' \
+        /pkg/usr/share/ocserv/ocserv.conf.template
 
 ############################
 # 2) Fetch s6-overlay (arch-aware)
@@ -124,10 +131,11 @@ RUN apk --no-cache --no-progress add \
     libev=4.33-r1 \
     lz4-libs=1.10.0-r1 \
     protobuf-c=1.5.2-r2 \
+    talloc=2.4.4-r1 \
     ca-certificates=20260611-r0 \
     shadow=4.18.0-r1 \
     libcap=2.78-r0 \
-    iptables=1.8.13-r0 \
+    nftables=1.1.6-r1 \
     readline=8.3.3-r1
 
 # One COPY to bring everything in
