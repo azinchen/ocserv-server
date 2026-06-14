@@ -1,27 +1,27 @@
 ############################
 # 1) Build ocserv
 ############################
-FROM alpine:3.23.4 AS ocserv-build
+FROM alpine:3.24.0 AS ocserv-build
 
 ARG OCSERV_VERSION=1.5.0
 
 RUN set -eux && \
     apk --no-cache --no-progress add \
-        build-base=0.5-r3 \
-        autoconf=2.72-r1 \
-        automake=1.18.1-r0 \
-        libtool=2.5.4-r2 \
+        build-base=0.5-r4 \
+        autoconf=2.73-r0 \
+        automake=1.18.1-r1 \
+        libtool=2.6.0-r1 \
         pkgconf=2.5.1-r0 \
         gnutls-dev=3.8.13-r0 \
-        readline-dev=8.3.1-r0 \
-        libseccomp-dev=2.6.0-r1 \
+        readline-dev=8.3.3-r1 \
+        libseccomp-dev=2.6.0-r2 \
         libnl3-dev=3.11.0-r0 \
         libev-dev=4.33-r1 \
-        lz4-dev=1.10.0-r0 \
+        lz4-dev=1.10.0-r1 \
         protobuf-c-dev=1.5.2-r2 \
-        linux-headers=6.16.12-r0 \
-        curl=8.19.0-r0 \
-        tar=1.35-r4 \
+        linux-headers=7.0.0-r1 \
+        curl=8.20.0-r1 \
+        tar=1.35-r5 \
         xz=5.8.3-r0 \
         && \
     curl -fsSL "https://www.infradead.org/ocserv/download/ocserv-${OCSERV_VERSION}.tar.xz" -o /tmp/ocserv.tar.xz && \
@@ -35,7 +35,7 @@ RUN set -eux && \
 ############################
 # 2) Fetch s6-overlay (arch-aware)
 ############################
-FROM alpine:3.23.4 AS s6-fetch
+FROM alpine:3.24.0 AS s6-fetch
 
 ARG TARGETARCH
 ARG TARGETVARIANT
@@ -46,9 +46,9 @@ ARG PACKAGEVERSION="3.2.3.0"
 RUN echo "**** install security fix packages ****" && \
     echo "**** install mandatory packages ****" && \
     apk --no-cache --no-progress add \
-        tar=1.35-r4 \
+        tar=1.35-r5 \
         xz=5.8.3-r0 \
-        wget=1.25.0-r2 \
+        wget=1.25.0-r3 \
         && \
     echo "**** create folders ****" && \
     mkdir -p /s6root && \
@@ -81,7 +81,7 @@ RUN echo "**** install security fix packages ****" && \
 ############################
 # 3) Assemble rootfs (apply perms here)
 ############################
-FROM alpine:3.23.4 AS rootfs
+FROM alpine:3.24.0 AS rootfs
 
 RUN mkdir -p /rootfs
 
@@ -98,7 +98,7 @@ COPY --from=ocserv-build /pkg/    /rootfs/
 ############################
 # 4) Final runtime (minimal layers)
 ############################
-FROM alpine:3.23.4
+FROM alpine:3.24.0
 
 ARG IMAGE_VERSION=N/A \
     BUILD_DATE=N/A \
@@ -120,15 +120,15 @@ LABEL org.opencontainers.image.title="OpenConnect VPN Server (ocserv) Docker con
 RUN apk --no-cache --no-progress add \
     gnutls=3.8.13-r0 \
     libnl3=3.11.0-r0 \
-    libseccomp=2.6.0-r1 \
+    libseccomp=2.6.0-r2 \
     libev=4.33-r1 \
-    lz4-libs=1.10.0-r0 \
+    lz4-libs=1.10.0-r1 \
     protobuf-c=1.5.2-r2 \
-    ca-certificates=20260413-r0 \
-    shadow=4.18.0-r0 \
+    ca-certificates=20260611-r0 \
+    shadow=4.18.0-r1 \
     libcap=2.78-r0 \
-    iptables=1.8.11-r1 \
-    readline=8.3.1-r0
+    iptables=1.8.13-r0 \
+    readline=8.3.3-r1
 
 # One COPY to bring everything in
 COPY --from=rootfs /rootfs/ /
