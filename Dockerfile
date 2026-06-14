@@ -29,7 +29,7 @@ RUN set -eux && \
     curl -fsSL "https://www.infradead.org/ocserv/download/ocserv-${OCSERV_VERSION}.tar.xz" -o /tmp/ocserv.tar.xz && \
     tar -C /tmp -xf /tmp/ocserv.tar.xz && \
     cd /tmp/ocserv-* && \
-    meson setup builddir --prefix=/usr --sysconfdir=/etc/ocserv --localstatedir=/var --buildtype=release -Dfirewall-script=nftables && \
+    meson setup builddir --prefix=/usr --sysconfdir=/etc/ocserv --localstatedir=/var --buildtype=release && \
     ninja -C builddir && \
     DESTDIR=/pkg meson install -C builddir --no-rebuild && \
     install -Dm644 doc/sample.config /pkg/usr/share/ocserv/ocserv.conf.template && \
