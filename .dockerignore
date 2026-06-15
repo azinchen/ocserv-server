@@ -1,0 +1,13 @@
+# The image is built from the Dockerfile + rootfs/ only (ocserv is fetched
+# during the build). Keep everything else out of the build context.
+.git
+.github
+wiki
+samples
+testing
+volumes
+docs
+scripts
+docker-compose.yml
+LICENSE
+*.md
