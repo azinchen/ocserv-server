@@ -139,21 +139,27 @@ cookie-timeout = 300
 # --- Auth (local password file) ---
 auth = "plain[passwd=/etc/ocserv/ocpasswd]"
 
-# --- Device & addressing ---
+# --- Device & addressing (IPv4-only by default) ---
 device = vpns
 ipv4-network = 10.10.0.0
 ipv4-netmask = 255.255.255.0
-ipv6-network = fda9:4efe:7e3b:03ea::/64
+# IPv6 is OFF by default. Handing clients an IPv6 address + a ::/0 route while the
+# server has no working IPv6 egress (Docker bridge without IPv6, IPV6_NAT=0)
+# blackholes client IPv6 traffic (connections hang before falling back to IPv4).
+# To enable IPv6: configure Docker IPv6 networking and set IPV6_NAT=1, then
+# uncomment ipv6-network, route = ::/0, and the IPv6 dns lines below.
+#ipv6-network = fda9:4efe:7e3b:03ea::/64
 
-# --- Full-tunnel routes ---
+# --- Full-tunnel route ---
 route = default
-route = ::/0
+#route = ::/0
 
-# --- Client DNS ---
+# --- Client DNS (forced through the tunnel to prevent leaks) ---
+tunnel-all-dns = true
 dns = 1.1.1.1
 dns = 9.9.9.9
-dns = 2606:4700:4700::1111
-dns = 2620:fe::9
+#dns = 2606:4700:4700::1111
+#dns = 2620:fe::9
 
 # --- Session/transport basics ---
 try-mtu-discovery = true

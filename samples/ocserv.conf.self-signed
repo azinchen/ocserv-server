@@ -213,7 +213,8 @@ ipv4-netmask = 255.255.255.0
 # --- Full-tunnel routes ---
 route = default
 
-# --- Client DNS ---
+# --- Client DNS (forced through the tunnel to prevent leaks) ---
+tunnel-all-dns = true
 dns = 8.8.8.8
 dns = 1.1.1.1
 
