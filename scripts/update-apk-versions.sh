@@ -17,7 +17,12 @@ if [ ! -f "$DOCKERFILE" ]; then
 fi
 
 # --- 1. Extract Alpine Version from Dockerfile ---
-ALPINE_VERSION_FULL=$(grep '^FROM alpine:' "$DOCKERFILE" | head -n1 | sed -E 's/FROM alpine:(.*)/\1/')
+# Read the ALPINE_VERSION ARG (the FROM lines reference alpine:${ALPINE_VERSION}).
+ALPINE_VERSION_FULL=$(grep -E '^ARG[[:space:]]+ALPINE_VERSION=' "$DOCKERFILE" | head -n1 | sed -E 's/.*ALPINE_VERSION=([^[:space:]]+).*/\1/')
+if [ -z "$ALPINE_VERSION_FULL" ]; then
+  echo "Error: could not determine ALPINE_VERSION from '$DOCKERFILE'"
+  exit 1
+fi
 ALPINE_BRANCH=$(echo "$ALPINE_VERSION_FULL" | cut -d. -f1,2)
 echo "Using Alpine branch version: $ALPINE_BRANCH"
 
