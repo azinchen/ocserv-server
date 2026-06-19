@@ -1,4 +1,2 @@
 docker-compose.yml
-/volumes
-/testing
-/test-config
+.claude

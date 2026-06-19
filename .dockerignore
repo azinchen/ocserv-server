@@ -2,9 +2,10 @@
 # during the build). Keep everything else out of the build context.
 .git
 .github
+.gitignore
+.dockerignore
+.gitmodules
 wiki
-testing
-volumes
 docs
 scripts
 docker-compose.yml
