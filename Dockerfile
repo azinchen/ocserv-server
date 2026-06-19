@@ -1,7 +1,9 @@
+ARG ALPINE_VERSION=3.24.1
+
 ############################
 # 1) Build ocserv
 ############################
-FROM alpine:3.24.1 AS ocserv-build
+FROM alpine:${ALPINE_VERSION} AS ocserv-build
 
 ARG OCSERV_VERSION=1.5.0
 
@@ -42,7 +44,7 @@ RUN set -eux && \
 ############################
 # 2) Fetch s6-overlay (arch-aware)
 ############################
-FROM alpine:3.24.1 AS s6-fetch
+FROM alpine:${ALPINE_VERSION} AS s6-fetch
 
 ARG TARGETARCH
 ARG TARGETVARIANT
@@ -88,7 +90,7 @@ RUN echo "**** install security fix packages ****" && \
 ############################
 # 3) Assemble rootfs (apply perms here)
 ############################
-FROM alpine:3.24.1 AS rootfs
+FROM alpine:${ALPINE_VERSION} AS rootfs
 
 RUN mkdir -p /rootfs
 
@@ -105,7 +107,7 @@ COPY --from=ocserv-build /pkg/    /rootfs/
 ############################
 # 4) Final runtime (minimal layers)
 ############################
-FROM alpine:3.24.1
+FROM alpine:${ALPINE_VERSION}
 
 ARG IMAGE_VERSION=N/A \
     BUILD_DATE=N/A \
