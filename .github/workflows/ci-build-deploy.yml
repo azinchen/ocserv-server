@@ -74,11 +74,34 @@ jobs:
             PUSH_TO_PROD=false
           fi
 
+          # Detect pre-release tags (e.g. 1.5.0-beta1, 1.5.0-rc2). They are
+          # published under their own version tag but must NOT move :latest.
+          IS_PRERELEASE=false
+          if [[ "$IS_TAG" == "true" && "$IMAGE_TAG" =~ -(alpha|beta|rc|pre|preview|snapshot)([._-]?[0-9]+)*$ ]]; then
+            IS_PRERELEASE=true
+          fi
+
+          # Production tag list: only final releases also get :latest.
+          PROD_TAGS=$(printf '%s\n%s\n' \
+            "${{ github.repository }}:${IMAGE_TAG}" \
+            "ghcr.io/${{ github.repository }}:${IMAGE_TAG}")
+          if [[ "$IS_PRERELEASE" == "false" ]]; then
+            PROD_TAGS=$(printf '%s\n%s\n%s\n' "$PROD_TAGS" \
+              "${{ github.repository }}:latest" \
+              "ghcr.io/${{ github.repository }}:latest")
+          fi
+
           echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "is_tag=${IS_TAG}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
           echo "platforms=${PLATFORMS}" >> $GITHUB_OUTPUT
           echo "push_to_prod=${PUSH_TO_PROD}" >> $GITHUB_OUTPUT
           echo "build_date=$(date -u +'%Y-%m-%d %H:%M:%S %Z')" >> $GITHUB_OUTPUT
+          {
+            echo "prod_tags<<EOF"
+            echo "$PROD_TAGS"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
           echo "Action branch=${GITHUB_REF_NAME} tag=${IS_TAG} ref=${GITHUB_REF} image_tag=${IMAGE_TAG} platforms=${PLATFORMS}"
 
@@ -134,11 +157,7 @@ jobs:
           build-args: |
             IMAGE_VERSION=${{ steps.git.outputs.image_tag }}
             BUILD_DATE=${{ steps.git.outputs.build_date }}
-          tags: |
-            ${{ github.repository }}:${{ steps.git.outputs.image_tag }}
-            ghcr.io/${{ github.repository }}:${{ steps.git.outputs.image_tag }}
-            ${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:latest
+          tags: ${{ steps.git.outputs.prod_tags }}
 
       # === MONITORING AND METADATA PHASE ===
       - name: Get image size and metadata
@@ -160,7 +179,7 @@ jobs:
 
       # === REPOSITORY MAINTENANCE PHASE ===
       - name: Update Docker Hub description and README
-        if: ${{ steps.git.outputs.is_tag == 'true' }}
+        if: ${{ steps.git.outputs.is_tag == 'true' && steps.git.outputs.is_prerelease == 'false' }}
         uses: peter-evans/dockerhub-description@v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
