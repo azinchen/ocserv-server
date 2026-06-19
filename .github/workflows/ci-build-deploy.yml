@@ -18,7 +18,7 @@ permissions:
 
 env:
   # Multi-platform builds for production (main/tags)
-  PLATFORMS: "linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/ppc64le,linux/s390x,linux/riscv64"
+  PLATFORMS: "linux/amd64,linux/arm64,linux/riscv64"
   # Fast builds for development branches (amd64 only)
   DEV_PLATFORMS: "linux/amd64"  # Only build for amd64 on development branches for speed
 
@@ -44,9 +44,6 @@ jobs:
             if [[ -z "${{ secrets.DOCKERHUB_USERNAME }}" ]] || [[ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
               echo "❌ DockerHub credentials not available for production build"
               exit 1
-            fi
-            if [[ -z "${{ secrets.DOCKERHUB_PASSWORD }}" ]]; then
-              echo "⚠️  DockerHub password not available - repo description update will be skipped"
             fi
           fi
           
@@ -162,14 +159,15 @@ jobs:
           fi
 
       # === REPOSITORY MAINTENANCE PHASE ===
-      - name: Update repo description
+      - name: Update Docker Hub description and README
         if: ${{ steps.git.outputs.is_tag == 'true' }}
         uses: peter-evans/dockerhub-description@v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ github.repository }}
           short-description: ${{ github.event.repository.description }}
+          readme-filepath: ./README.md
 
   # === SECURITY SCANNING PHASE ===
   security-scan-built-image:
