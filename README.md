@@ -10,7 +10,7 @@ OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a Docker con
 # docker-compose.yml
 services:
   ocserv:
-    image: ghcr.io/azinchen/ocserv-server:dev
+    image: azinchen/ocserv-server:latest
     container_name: ocserv-server
     restart: unless-stopped
     cap_add:
