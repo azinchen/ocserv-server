@@ -7,6 +7,8 @@ FROM alpine:${ALPINE_VERSION} AS ocserv-build
 
 ARG OCSERV_VERSION=1.5.0
 
+COPY patches/ /tmp/patches/
+
 RUN set -eux && \
     apk --no-cache --no-progress add \
         build-base=0.5-r4 \
@@ -27,10 +29,12 @@ RUN set -eux && \
         curl=8.20.0-r1 \
         tar=1.35-r5 \
         xz=5.8.3-r0 \
+        patch=2.8-r0 \
         && \
     curl -fsSL "https://www.infradead.org/ocserv/download/ocserv-${OCSERV_VERSION}.tar.xz" -o /tmp/ocserv.tar.xz && \
     tar -C /tmp -xf /tmp/ocserv.tar.xz && \
     cd /tmp/ocserv-* && \
+    for p in /tmp/patches/*.patch; do echo "Applying patch ${p}" && patch -p1 < "${p}"; done && \
     meson setup builddir --prefix=/usr --sysconfdir=/etc/ocserv --localstatedir=/var --buildtype=release && \
     ninja -C builddir && \
     DESTDIR=/pkg meson install -C builddir --no-rebuild && \
