@@ -1,0 +1,78 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+
+set -eu
+
+. /usr/local/bin/backend-functions
+
+# Optional "gateway mode": send the VPN client subnet OUT through an upstream
+# gateway container (e.g. a NordVPN container running FORWARD_FROM) instead of
+# this container's own default route.
+#
+# We use source-based policy routing rather than replacing the default route, so
+# the inbound listener and this container's own traffic keep using the default
+# route: only packets FROM the client subnet are steered to the gateway. The
+# routing decision happens before init-nat's masquerade, so the "from <subnet>"
+# match still sees the real client source address.
+
+if [ -z "${vpn_gateway:-}" ]; then
+    log "[INIT-VPNGW] VPN_GATEWAY not set; clients exit via the default route"
+    exit 0
+fi
+
+table="$vpn_gateway_table"
+prio="$vpn_gateway_rule_prio"
+
+# ---- IPv4 routing --------------------------------------------------------
+log "[INIT-VPNGW] Routing $vpn_subnet via $vpn_gateway (table $table)"
+ip route replace default via "$vpn_gateway" table "$table"
+ip rule show | grep -q "from $vpn_subnet lookup $table" \
+    || ip rule add from "$vpn_subnet" lookup "$table" priority "$prio"
+
+# ---- IPv6 routing (only if an upstream v6 gateway is provided) ------------
+if [ -n "${vpn_gateway6:-}" ]; then
+    log "[INIT-VPNGW] Routing $ipv6_subnet via $vpn_gateway6 (table $table)"
+    ip -6 route replace default via "$vpn_gateway6" table "$table" \
+        || log_error "[INIT-VPNGW] Warning: could not add IPv6 gateway route"
+    ip -6 rule show 2>/dev/null | grep -q "from $ipv6_subnet lookup $table" \
+        || ip -6 rule add from "$ipv6_subnet" lookup "$table" priority "$prio" \
+        || log_error "[INIT-VPNGW] Warning: could not add IPv6 policy rule"
+fi
+
+# ---- Kill switch (defense in depth) --------------------------------------
+# The policy route already forces client traffic to the gateway, but if that
+# route is ever missing the kernel would fall through to the main table and leak
+# out the WAN. These nft rules make that explicit and fail-closed:
+#   * IPv4: allow client traffic out the WAN ONLY toward the gateway next-hop;
+#           drop anything else (e.g. a fall-through to the docker bridge).
+#   * IPv6 with a v6 gateway: same next-hop guard as IPv4.
+#   * IPv6 without a v6 gateway: no v6 path, so drop forwarded client v6 outright
+#           (otherwise it would bypass the v4-only policy rule).
+case "$vpn_if" in
+    *+) vpn_ifname="${vpn_if%+}*" ;;
+    *)  vpn_ifname="$vpn_if" ;;
+esac
+
+if [ -n "${vpn_gateway6:-}" ]; then
+    killswitch6="ip6 saddr $ipv6_subnet oifname \"$wan_if\" rt ip6 nexthop != $vpn_gateway6 drop"
+else
+    killswitch6="meta nfproto ipv6 iifname \"$vpn_ifname\" drop"
+fi
+
+nft delete table inet ocserv_gw 2>/dev/null || true
+if nft -f - <<EOF
+table inet ocserv_gw {
+    chain forward {
+        type filter hook forward priority -10; policy accept;
+        ip saddr $vpn_subnet oifname "$wan_if" rt ip nexthop != $vpn_gateway drop
+        $killswitch6
+    }
+}
+EOF
+then
+    log "[INIT-VPNGW] Kill-switch installed (table inet ocserv_gw)"
+else
+    log_error "[INIT-VPNGW] Warning: kill-switch nft rules failed to load; relying on policy routing only"
+fi
+
+log "[INIT-VPNGW] Gateway routing active"

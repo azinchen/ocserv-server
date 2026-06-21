@@ -55,8 +55,21 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | `VPN_SUBNET` | `10.10.10.0/24` | VPN client subnet (must match `ipv4-network` in `ocserv.conf`) |
 | `WAN_IF` | `eth0` | WAN interface for NAT |
 | `IPV6_NAT` | `0` | enable IPv6 masquerade (see the IPv6 notes on the wiki) |
+| `VPN_GATEWAY` | _(unset)_ | Route the client subnet out through an upstream gateway container (e.g. a NordVPN container with `FORWARD_FROM`) via source-based policy routing. Set to the gateway's IP. Adds a fail-closed nft kill switch (`inet ocserv_gw`) so client traffic can only leave toward the gateway. |
+| `VPN_GATEWAY6` | _(unset)_ | IPv6 gateway for gateway mode. If set, the IPv6 client subnet is policy-routed to it; if unset, forwarded client IPv6 is **dropped** to prevent leaks. |
+| `VPN_GATEWAY_TABLE` | `100` | Routing table used for gateway mode. |
+| `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
 
 Full reference: [Configuration Reference](https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference).
+
+## Route clients through another VPN (gateway mode)
+
+Set `VPN_GATEWAY` to the IP of an upstream VPN container (for example a
+[NordVPN](https://github.com/azinchen/nordvpn) container running `FORWARD_FROM`)
+and ocserv policy-routes its client subnet out through it — clients exit with the
+upstream's IP. A fail-closed nft kill switch ensures client traffic can only leave
+toward the gateway (no leak if the upstream tunnel drops). Add `VPN_GATEWAY6` to do
+the same for IPv6. See [Gateway Mode](https://github.com/azinchen/ocserv-server/wiki/Gateway-Mode).
 
 ## Build
 
