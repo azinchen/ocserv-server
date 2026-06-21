@@ -45,16 +45,16 @@ fi
 # out the WAN. These nft rules make that explicit and fail-closed:
 #   * IPv4: allow client traffic out the WAN ONLY toward the gateway next-hop;
 #           drop anything else (e.g. a fall-through to the docker bridge).
-#   * IPv6: with no v6 gateway there is no v6 path, so drop forwarded client v6
-#           outright (otherwise it would bypass the v4-only policy rule). When a
-#           v6 gateway IS configured, v6 is policy-routed above and not dropped.
+#   * IPv6 with a v6 gateway: same next-hop guard as IPv4.
+#   * IPv6 without a v6 gateway: no v6 path, so drop forwarded client v6 outright
+#           (otherwise it would bypass the v4-only policy rule).
 case "$vpn_if" in
     *+) vpn_ifname="${vpn_if%+}*" ;;
     *)  vpn_ifname="$vpn_if" ;;
 esac
 
 if [ -n "${vpn_gateway6:-}" ]; then
-    killswitch6=""
+    killswitch6="ip6 saddr $ipv6_subnet oifname \"$wan_if\" rt ip6 nexthop != $vpn_gateway6 drop"
 else
     killswitch6="meta nfproto ipv6 iifname \"$vpn_ifname\" drop"
 fi
