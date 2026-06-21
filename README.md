@@ -62,6 +62,15 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 
 Full reference: [Configuration Reference](https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference).
 
+## Route clients through another VPN (gateway mode)
+
+Set `VPN_GATEWAY` to the IP of an upstream VPN container (for example a
+[NordVPN](https://github.com/azinchen/nordvpn) container running `FORWARD_FROM`)
+and ocserv policy-routes its client subnet out through it — clients exit with the
+upstream's IP. A fail-closed nft kill switch ensures client traffic can only leave
+toward the gateway (no leak if the upstream tunnel drops). Add `VPN_GATEWAY6` to do
+the same for IPv6. See [Gateway Mode](https://github.com/azinchen/ocserv-server/wiki/Gateway-Mode).
+
 ## Build
 
 ```bash
