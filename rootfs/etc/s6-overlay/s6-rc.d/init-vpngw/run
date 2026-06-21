@@ -1,0 +1,34 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+
+set -eu
+
+. /usr/local/bin/backend-functions
+
+# Optional "gateway mode": send the VPN client subnet OUT through an upstream
+# gateway container (e.g. a NordVPN container running FORWARD_FROM) instead of
+# this container's own default route.
+#
+# We use source-based policy routing rather than replacing the default route, so
+# the inbound listener and this container's own traffic keep working: only
+# packets FROM the client subnet are steered to the gateway. The routing
+# decision happens before init-nat's masquerade, so the "from <subnet>" match
+# still sees the real client source address.
+
+if [ -z "${vpn_gateway:-}" ]; then
+    log "[INIT-VPNGW] VPN_GATEWAY not set; clients exit via the default route"
+    exit 0
+fi
+
+log "[INIT-VPNGW] Routing $vpn_subnet via $vpn_gateway (table $vpn_gateway_table)"
+
+# Default route for the dedicated table -> upstream gateway.
+ip route replace default via "$vpn_gateway" table "$vpn_gateway_table"
+
+# Policy rule (idempotent across container restarts).
+if ! ip rule show | grep -q "from $vpn_subnet lookup $vpn_gateway_table"; then
+    ip rule add from "$vpn_subnet" lookup "$vpn_gateway_table" \
+        priority "$vpn_gateway_rule_prio"
+fi
+
+log "[INIT-VPNGW] Gateway routing active"

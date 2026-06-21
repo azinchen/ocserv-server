@@ -55,6 +55,9 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | `VPN_SUBNET` | `10.10.10.0/24` | VPN client subnet (must match `ipv4-network` in `ocserv.conf`) |
 | `WAN_IF` | `eth0` | WAN interface for NAT |
 | `IPV6_NAT` | `0` | enable IPv6 masquerade (see the IPv6 notes on the wiki) |
+| `VPN_GATEWAY` | _(unset)_ | Route the client subnet out through an upstream gateway container (e.g. a NordVPN container with `FORWARD_FROM`) via source-based policy routing. Set to the gateway's IP. |
+| `VPN_GATEWAY_TABLE` | `100` | Routing table used for gateway mode. |
+| `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
 
 Full reference: [Configuration Reference](https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference).
 
