@@ -1,5 +1,6 @@
 # ocserv-server
 
+[![GitHub release][github-release]][github-releases]
 [![Build][github-build]][github-actions]
 [![GitHub stars][github-stars]][github-link]
 [![GitHub forks][github-forks]][github-link]
@@ -93,6 +94,8 @@ docker build -t ocserv-server .
 
 MIT — see [LICENSE](LICENSE).
 
+[github-release]: https://img.shields.io/github/v/release/azinchen/ocserv-server
+[github-releases]: https://github.com/azinchen/ocserv-server/releases
 [github-build]: https://img.shields.io/github/actions/workflow/status/azinchen/ocserv-server/ci-build-deploy.yml?branch=main&label=build
 [github-actions]: https://github.com/azinchen/ocserv-server/actions/workflows/ci-build-deploy.yml
 [github-stars]: https://img.shields.io/github/stars/azinchen/ocserv-server
