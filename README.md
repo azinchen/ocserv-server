@@ -1,5 +1,11 @@
 # ocserv-server
 
+[![CI - Build and Deploy](https://github.com/azinchen/ocserv-server/actions/workflows/ci-build-deploy.yml/badge.svg)](https://github.com/azinchen/ocserv-server/actions/workflows/ci-build-deploy.yml)
+[![Docker Pulls](https://img.shields.io/docker/pulls/azinchen/ocserv-server.svg)](https://hub.docker.com/r/azinchen/ocserv-server)
+[![Docker Stars](https://img.shields.io/docker/stars/azinchen/ocserv-server.svg)](https://hub.docker.com/r/azinchen/ocserv-server)
+[![Docker Image Size](https://img.shields.io/docker/image-size/azinchen/ocserv-server/latest.svg)](https://hub.docker.com/r/azinchen/ocserv-server)
+[![License](https://img.shields.io/github/license/azinchen/ocserv-server.svg)](https://github.com/azinchen/ocserv-server/blob/main/LICENSE)
+
 OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a Docker container with s6-overlay. Builds ocserv from source on Alpine, sets up NAT/forwarding automatically with nftables, and supports camouflage mode to hide the VPN as ordinary HTTPS.
 
 📖 **Full documentation is in the [Wiki](https://github.com/azinchen/ocserv-server/wiki).**
