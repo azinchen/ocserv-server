@@ -1,4 +1,4 @@
-# ocserv-server
+# OpenConnect VPN Server Docker Container
 
 [![GitHub release][github-release]][github-releases]
 [![Build][github-build]][github-actions]
