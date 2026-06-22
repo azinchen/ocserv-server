@@ -1,10 +1,14 @@
 # ocserv-server
 
-[![CI - Build and Deploy](https://github.com/azinchen/ocserv-server/actions/workflows/ci-build-deploy.yml/badge.svg)](https://github.com/azinchen/ocserv-server/actions/workflows/ci-build-deploy.yml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/azinchen/ocserv-server.svg)](https://hub.docker.com/r/azinchen/ocserv-server)
-[![Docker Stars](https://img.shields.io/docker/stars/azinchen/ocserv-server.svg)](https://hub.docker.com/r/azinchen/ocserv-server)
-[![Docker Image Size](https://img.shields.io/docker/image-size/azinchen/ocserv-server/latest.svg)](https://hub.docker.com/r/azinchen/ocserv-server)
-[![License](https://img.shields.io/github/license/azinchen/ocserv-server.svg)](https://github.com/azinchen/ocserv-server/blob/main/LICENSE)
+[![Build][github-build]][github-actions]
+[![GitHub stars][github-stars]][github-link]
+[![GitHub forks][github-forks]][github-link]
+[![Open issues][github-issues]][github-issues-link]
+[![Last commit][github-lastcommit]][github-link]<br>
+[![Docker pulls][dockerhub-pulls]][dockerhub-link]
+[![Docker stars][dockerhub-stars]][dockerhub-link]
+[![Docker image size][dockerhub-size]][dockerhub-link]
+[![Multi-arch][multiarch-badge]][dockerhub-link]
 
 OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a Docker container with s6-overlay. Builds ocserv from source on Alpine, sets up NAT/forwarding automatically with nftables, and supports camouflage mode to hide the VPN as ordinary HTTPS.
 
@@ -88,3 +92,17 @@ docker build -t ocserv-server .
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+[github-build]: https://img.shields.io/github/actions/workflow/status/azinchen/ocserv-server/ci-build-deploy.yml?branch=main&label=build
+[github-actions]: https://github.com/azinchen/ocserv-server/actions/workflows/ci-build-deploy.yml
+[github-stars]: https://img.shields.io/github/stars/azinchen/ocserv-server
+[github-forks]: https://img.shields.io/github/forks/azinchen/ocserv-server
+[github-issues]: https://img.shields.io/github/issues/azinchen/ocserv-server
+[github-issues-link]: https://github.com/azinchen/ocserv-server/issues
+[github-lastcommit]: https://img.shields.io/github/last-commit/azinchen/ocserv-server
+[github-link]: https://github.com/azinchen/ocserv-server
+[dockerhub-pulls]: https://img.shields.io/docker/pulls/azinchen/ocserv-server
+[dockerhub-stars]: https://img.shields.io/docker/stars/azinchen/ocserv-server
+[dockerhub-size]: https://img.shields.io/docker/image-size/azinchen/ocserv-server/latest
+[dockerhub-link]: https://hub.docker.com/r/azinchen/ocserv-server
+[multiarch-badge]: https://img.shields.io/badge/arch-amd64%20%7C%20arm64%20%7C%20riscv64-blue
