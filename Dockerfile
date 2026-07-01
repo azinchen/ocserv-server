@@ -26,7 +26,7 @@ RUN set -eux && \
         lz4-dev=1.10.0-r1 \
         protobuf-c-dev=1.5.2-r2 \
         linux-headers=7.0.0-r1 \
-        curl=8.20.0-r1 \
+        curl=8.21.0-r0 \
         tar=1.35-r5 \
         xz=5.8.3-r0 \
         patch=2.8-r0 \
