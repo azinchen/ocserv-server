@@ -1,3 +1,17 @@
+worker-privs: allow musl mallocng syscalls (munmap/mremap/madvise)
+
+Fixes ocserv worker crashes under load on Alpine/musl: the seccomp filter
+blocks syscalls used by musl's mallocng allocator, so allocations fail and
+GnuTLS aborts the worker with GNUTLS_E_MEMORY_ERROR.
+
+Upstream status:
+- Reported: https://gitlab.com/openconnect/ocserv/-/work_items/749
+- Fix submitted (open): https://gitlab.com/openconnect/ocserv/-/merge_requests/588
+
+This patch is required until the MR is merged and a fixed ocserv release
+ships. When bumping OCSERV_VERSION, check whether the release contains the
+fix and drop this patch if it does.
+
 --- a/src/worker-privs.c
 +++ b/src/worker-privs.c
 @@ -137,6 +137,12 @@
