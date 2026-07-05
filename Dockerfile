@@ -132,6 +132,7 @@ LABEL org.opencontainers.image.title="OpenConnect VPN Server (ocserv) Docker con
 
 RUN apk --no-cache --no-progress add \
     gnutls=3.8.13-r0 \
+    p11-kit=0.26.2-r0 \
     libnl3=3.11.0-r0 \
     libseccomp=2.6.0-r2 \
     libev=4.33-r1 \
