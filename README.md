@@ -70,6 +70,10 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | `VPN_GATEWAY6` | _(unset)_ | IPv6 gateway for gateway mode. If set, the IPv6 client subnet is policy-routed to it; if unset, forwarded client IPv6 is **dropped** to prevent leaks. |
 | `VPN_GATEWAY_TABLE` | `100` | Routing table used for gateway mode. |
 | `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
+| `VPN_GATEWAYS` | _(unset)_ | Named upstream gateways for per-user routing, e.g. `nl=172.28.0.2,us=172.28.0.4`. Each gets its own routing table and kill-switch set. |
+| `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. A name without one has its users' forwarded IPv6 dropped (fail-closed). |
+| `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. Unmapped users follow `VPN_GATEWAY` (or the default route if unset); the reserved name `direct` bypasses `VPN_GATEWAY`. |
+| `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (must be lower than `VPN_GATEWAY_RULE_PRIO` to win). |
 
 Full reference: [Configuration Reference](https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference).
 
@@ -81,6 +85,11 @@ and ocserv policy-routes its client subnet out through it — clients exit with 
 upstream's IP. A fail-closed nft kill switch ensures client traffic can only leave
 toward the gateway (no leak if the upstream tunnel drops). Add `VPN_GATEWAY6` to do
 the same for IPv6. See [Gateway Mode](https://github.com/azinchen/ocserv-server/wiki/Gateway-Mode).
+
+Different users can exit through different gateways: define named gateways with
+`VPN_GATEWAYS` and map users to them with `VPN_USER_GATEWAY` (e.g.
+`user1=nl,user2=us`). Rules are installed per session on connect, so no static IP
+assignment is needed, and every path keeps the fail-closed kill switch.
 
 ## Build
 

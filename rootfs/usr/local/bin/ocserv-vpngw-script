@@ -1,0 +1,138 @@
+#!/bin/sh
+# shellcheck shell=sh
+#
+# ocserv connect/disconnect hook for per-user gateway routing (VPN_USER_GATEWAY).
+#
+# ocserv runs this script with the session in the environment: REASON
+# (connect|disconnect), USERNAME, IP_REMOTE (assigned IPv4) and IPV6_REMOTE
+# (assigned IPv6, if any). On connect we install a source policy rule steering
+# the session's address to its gateway's routing table and register the address
+# in the matching kill-switch set; on disconnect we remove them. State written
+# by init-vpngw lives in $vpngw_state_dir:
+#   gateways               "name table gw4 gw6|-" per named gateway
+#   users                  "username gwname" per mapped user
+#   user-connect-script    original user hook to chain-call (optional)
+#   user-disconnect-script original user hook to chain-call (optional)
+#
+# Fail-closed: if the routing rule or kill-switch entry cannot be installed on
+# connect, we exit non-zero so ocserv REJECTS the session instead of letting the
+# user's traffic fall through to the default gateway.
+
+set -u
+
+. /usr/local/bin/backend-functions
+
+reason="${REASON:-}"
+username="${USERNAME:-}"
+ip4="${IP_REMOTE:-}"
+ip6="${IPV6_REMOTE:-}"
+ip6="${ip6%%/*}"
+prio="$vpn_gateway_user_rule_prio"
+
+# Chain-call the user's original connect/disconnect script, if one was
+# configured in ocserv.conf before we installed our hook.
+run_user_script() {
+    script_file="$vpngw_state_dir/user-$reason-script"
+    [ -f "$script_file" ] || return 0
+    user_script="$(cat "$script_file")"
+    [ -n "$user_script" ] || return 0
+    "$user_script"
+}
+
+# Remove every policy rule and kill-switch entry for this session's addresses.
+# Used on disconnect and as stale-state cleanup before connect, so an address
+# can never keep a previous session's gateway.
+cleanup_session() {
+    if [ -n "$ip4" ]; then
+        n=0
+        while [ "$n" -lt 16 ] && ip rule del from "$ip4" priority "$prio" 2>/dev/null; do
+            n=$((n + 1))
+        done
+        nft delete element inet ocserv_gw direct_v4 "{ $ip4 }" 2>/dev/null || true
+    fi
+    if [ -n "$ip6" ]; then
+        n=0
+        while [ "$n" -lt 16 ] && ip -6 rule del from "$ip6" priority "$prio" 2>/dev/null; do
+            n=$((n + 1))
+        done
+        nft delete element inet ocserv_gw direct_v6 "{ $ip6 }" 2>/dev/null || true
+        nft delete element inet ocserv_gw v6_drop "{ $ip6 }" 2>/dev/null || true
+    fi
+    if [ -f "$vpngw_state_dir/gateways" ]; then
+        while read -r name _ _ gw6; do
+            [ -n "$ip4" ] \
+                && { nft delete element inet ocserv_gw "gw_${name}_v4" "{ $ip4 }" 2>/dev/null || true; }
+            [ "$gw6" != "-" ] && [ -n "$ip6" ] \
+                && { nft delete element inet ocserv_gw "gw_${name}_v6" "{ $ip6 }" 2>/dev/null || true; }
+        done < "$vpngw_state_dir/gateways"
+    fi
+    return 0
+}
+
+fail_closed() {
+    log_error "[VPNGW-HOOK] $1 (user '$username', ip $ip4); rejecting session"
+    cleanup_session
+    exit 1
+}
+
+# Feature disabled or user not mapped: nothing to do beyond the user's own hook
+if [ ! -f "$vpngw_state_dir/users" ] || [ -z "$username" ]; then
+    run_user_script
+    exit $?
+fi
+gwname="$(awk -v u="$username" '$1 == u { print $2; exit }' "$vpngw_state_dir/users")"
+if [ -z "$gwname" ]; then
+    run_user_script
+    exit $?
+fi
+
+case "$reason" in
+    connect)
+        [ -n "$ip4" ] || fail_closed "no IP_REMOTE in connect event"
+        cleanup_session
+        if [ "$gwname" = "direct" ]; then
+            nft add element inet ocserv_gw direct_v4 "{ $ip4 }" \
+                || fail_closed "cannot add direct_v4 kill-switch entry"
+            if [ -n "$ip6" ]; then
+                nft add element inet ocserv_gw direct_v6 "{ $ip6 }" \
+                    || fail_closed "cannot add direct_v6 kill-switch entry"
+            fi
+            log "[VPNGW-HOOK] User '$username' ($ip4${ip6:+, $ip6}) exits via default route"
+        else
+            gw_line="$(awk -v n="$gwname" '$1 == n { print; exit }' "$vpngw_state_dir/gateways")"
+            [ -n "$gw_line" ] || fail_closed "gateway '$gwname' not found in state"
+            gw_table="$(echo "$gw_line" | awk '{ print $2 }')"
+            gw6="$(echo "$gw_line" | awk '{ print $4 }')"
+            ip rule add from "$ip4" lookup "$gw_table" priority "$prio" \
+                || fail_closed "cannot add policy rule for gateway '$gwname'"
+            nft add element inet ocserv_gw "gw_${gwname}_v4" "{ $ip4 }" \
+                || fail_closed "cannot add kill-switch entry for gateway '$gwname'"
+            if [ -n "$ip6" ]; then
+                if [ "$gw6" != "-" ]; then
+                    ip -6 rule add from "$ip6" lookup "$gw_table" priority "$prio" \
+                        || fail_closed "cannot add IPv6 policy rule for gateway '$gwname'"
+                    nft add element inet ocserv_gw "gw_${gwname}_v6" "{ $ip6 }" \
+                        || fail_closed "cannot add IPv6 kill-switch entry for gateway '$gwname'"
+                else
+                    # Gateway has no IPv6: drop this session's forwarded IPv6 so
+                    # it cannot bypass the IPv4-only policy rule
+                    nft add element inet ocserv_gw v6_drop "{ $ip6 }" \
+                        || fail_closed "cannot add v6_drop kill-switch entry"
+                fi
+            fi
+            log "[VPNGW-HOOK] User '$username' ($ip4${ip6:+, $ip6}) routed via gateway '$gwname' (table $gw_table)"
+        fi
+        run_user_script
+        exit $?
+        ;;
+    disconnect)
+        cleanup_session
+        log "[VPNGW-HOOK] User '$username' ($ip4${ip6:+, $ip6}) gateway rules removed"
+        run_user_script || true
+        exit 0
+        ;;
+    *)
+        run_user_script
+        exit $?
+        ;;
+esac

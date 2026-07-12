@@ -95,7 +95,7 @@ If that fails, leave IPv6 off.
 
 ## Routing clients through another VPN
 
-To send client traffic out through an upstream VPN container (e.g. NordVPN) instead of straight out the WAN, set `VPN_GATEWAY`. ocserv then policy-routes the client subnet to that gateway and adds a fail-closed kill switch. See **[[Gateway Mode]]**.
+To send client traffic out through an upstream VPN container (e.g. NordVPN) instead of straight out the WAN, set `VPN_GATEWAY`. ocserv then policy-routes the client subnet to that gateway and adds a fail-closed kill switch. Individual users can also be routed through different gateways with `VPN_GATEWAYS` + `VPN_USER_GATEWAY`. See **[[Gateway Mode]]**.
 
 ---
 

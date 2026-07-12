@@ -17,10 +17,14 @@ Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
 |---|---|---|
 | `VPN_GATEWAY` | _(unset)_ | Upstream gateway IP. Steers `VPN_SUBNET` to it and installs the kill switch. Unset = normal standalone ocserv. |
 | `VPN_GATEWAY6` | _(unset)_ | Upstream IPv6 gateway. Set it to route the IPv6 client subnet too; unset = forwarded client IPv6 is dropped. |
-| `VPN_GATEWAY_TABLE` | `100` | Routing table used for the gateway default route. |
+| `VPN_GATEWAY_TABLE` | `100` | Routing table used for the gateway default route. Named gateways use the following tables (101, 102, …). |
 | `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
+| `VPN_GATEWAYS` | _(unset)_ | Named gateways for [per-user routing](#per-user-gateways), e.g. `nl=172.28.0.2,us=172.28.0.4`. |
+| `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. |
+| `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. |
+| `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (wins over the subnet rule). |
 
-When `VPN_GATEWAY` is unset, the `init-vpngw` service is a no-op — ocserv behaves exactly as a standalone server (including normal IPv6).
+When `VPN_GATEWAY` and `VPN_GATEWAYS` are unset, the `init-vpngw` service is a no-op — ocserv behaves exactly as a standalone server (including normal IPv6).
 
 ## How it works
 
@@ -61,6 +65,43 @@ In every case clients lose internet rather than leaking out the host's real IP.
 
 - **Upstream is IPv4-only** (the NordVPN container is, by default): leave `VPN_GATEWAY6` unset. Forwarded client IPv6 is dropped so it can't bypass the IPv4 policy rule.
 - **Upstream is dual-stack**: set `VPN_GATEWAY6` to its IPv6 address. ocserv policy-routes `IPV6_SUBNET` to it with the same fail-closed next-hop guard. This also needs working IPv6 on the Docker network and the upstream forwarding IPv6 (see [Networking NAT and Routing#ipv6](Networking-NAT-and-Routing#ipv6)).
+
+## Per-user gateways
+
+Different users can exit through **different** upstream gateways — e.g. `user1` through a NordVPN-Netherlands container, `user2` through a NordVPN-US one, everyone else through `VPN_GATEWAY` (or straight out if it's unset):
+
+```yaml
+environment:
+  - VPN_SUBNET=10.20.0.0/24
+  - VPN_GATEWAYS=nl=172.28.0.2,us=172.28.0.4   # named gateways
+  - VPN_USER_GATEWAY=user1=nl,user2=us         # username -> gateway name
+  - VPN_GATEWAY=172.28.0.2                     # optional default for everyone else
+```
+
+### How it works
+
+Routing is keyed on the client's **source IP**, and a user's IP is only known when their session comes up. So `init-vpngw` prepares one routing table and one kill-switch set per named gateway at boot, and installs `connect-script`/`disconnect-script` hooks into `ocserv.conf` (a managed, marked block — an existing script you configured is chain-called and restored if you disable the feature). On connect the hook looks the username up and adds a `/32` policy rule plus a kill-switch set entry for the session's address; on disconnect it removes them:
+
+```
+$ ip rule                                # user1 and user2 online
+900:  from 10.20.0.37 lookup 101         # user1 -> nl
+900:  from 10.20.0.52 lookup 102         # user2 -> us
+1000: from 10.20.0.0/24 lookup 100       # everyone else -> VPN_GATEWAY
+```
+
+No static IP assignment is needed, dynamic pool addresses and multiple sessions per user work, and a stale address can never inherit a previous user's gateway (the hook scrubs the address before reuse).
+
+### Fail-closed, per user
+
+Each named gateway gets its own next-hop guard in the `inet ocserv_gw` nft table, driven by a per-gateway address set. A mapped user's traffic may leave the WAN **only** toward their own gateway — if the policy rule is missing it is dropped, never leaked out the host or another user's gateway. If the hook cannot install the rules on connect, the **session is rejected** rather than silently falling back to the default route.
+
+### Details
+
+- **Unmapped users** follow `VPN_GATEWAY` if set, otherwise the container's default route — exactly the classic behavior.
+- **`direct`** is a reserved gateway name: a user mapped to it exits via the container's default route even when `VPN_GATEWAY` is set for everyone else.
+- **IPv6:** give a gateway an IPv6 address in `VPN_GATEWAYS6` and its users' IPv6 is policy-routed the same way. A gateway without one has its users' forwarded IPv6 **dropped**, so it can't bypass the IPv4 rule.
+- **Validation:** referencing an undefined gateway name in `VPN_USER_GATEWAY` fails container startup loudly.
+- Usernames containing `,` or `=` can't be expressed in the map.
 
 ## Upstream requirements (NordVPN example)
 
@@ -122,6 +163,11 @@ docker exec ocserv-server nft list table inet ocserv_gw
 
 # a connected client's exit IP should equal the upstream's, not the host's
 docker exec ocserv-server sh -c 'curl -s https://1.1.1.1/cdn-cgi/trace | grep ^ip='
+
+# per-user gateways: parsed state and live per-session rules
+docker exec ocserv-server cat /run/ocserv-vpngw/gateways /run/ocserv-vpngw/users
+docker exec ocserv-server ip rule                        # one 900-prio rule per mapped session
+docker exec ocserv-server nft list table inet ocserv_gw  # session IPs inside the gw_<name>_v4 sets
 ```
 
 ---

@@ -16,8 +16,12 @@ These are read by the container's startup scripts (`backend-functions`) and driv
 | `IPV6_SUBNET` | `fda9:4efe:7e3b:03ea::/64` | IPv6 ULA subnet to masquerade when `IPV6_NAT=1`. |
 | `VPN_GATEWAY` | _(unset)_ | Route the client subnet out through an upstream gateway container (e.g. a NordVPN container) instead of straight out the WAN. Set to the gateway's IP. Adds a fail-closed kill switch. See [[Gateway Mode]]. |
 | `VPN_GATEWAY6` | _(unset)_ | Upstream IPv6 gateway. Set to route the IPv6 client subnet through it; unset means forwarded client IPv6 is dropped. See [[Gateway Mode]]. |
-| `VPN_GATEWAY_TABLE` | `100` | Routing table used for the gateway default route. |
+| `VPN_GATEWAY_TABLE` | `100` | Routing table used for the gateway default route. Named gateways from `VPN_GATEWAYS` use the following tables (101, 102, …). |
 | `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
+| `VPN_GATEWAYS` | _(unset)_ | Named upstream gateways for per-user routing, e.g. `nl=172.28.0.2,us=172.28.0.4`. See [Gateway Mode#per-user-gateways](Gateway-Mode#per-user-gateways). |
+| `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. A gateway without one has its users' forwarded IPv6 dropped (fail-closed). |
+| `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. Unmapped users follow `VPN_GATEWAY` or the default route; the reserved name `direct` bypasses `VPN_GATEWAY`. |
+| `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules; must be numerically lower (= stronger) than `VPN_GATEWAY_RULE_PRIO`. |
 
 > **About `PUID`/`PGID`:** this image does **not** implement LinuxServer-style `PUID`/`PGID` user remapping. Setting them has no effect; ocserv drops privileges internally via the `run-as-user`/`run-as-group` directives in `ocserv.conf`.
 

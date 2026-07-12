@@ -14,58 +14,169 @@ set -eu
 # route: only packets FROM the client subnet are steered to the gateway. The
 # routing decision happens before init-nat's masquerade, so the "from <subnet>"
 # match still sees the real client source address.
+#
+# Two layers are supported and can be combined:
+#   * VPN_GATEWAY / VPN_GATEWAY6           - default gateway for the whole subnet
+#   * VPN_GATEWAYS + VPN_USER_GATEWAY      - per-user gateways: named gateways get
+#     their own routing table and kill-switch set here; the actual per-session
+#     rules are added/removed by /usr/local/bin/ocserv-vpngw-script, which ocserv
+#     runs on client connect/disconnect (the session's source IP is only known
+#     then). Users not listed in VPN_USER_GATEWAY follow VPN_GATEWAY if set,
+#     otherwise the container's default route. The reserved gateway name
+#     "direct" sends a user out the default route even when VPN_GATEWAY is set.
 
-if [ -z "${vpn_gateway:-}" ]; then
-    log "[INIT-VPNGW] VPN_GATEWAY not set; clients exit via the default route"
+conf=/etc/ocserv/ocserv.conf
+
+# Undo our managed edits in ocserv.conf (managed block + commented-out user
+# hooks). Only touches the file if our markers are present.
+restore_config() {
+    [ -f "$conf" ] || return 0
+    if grep -q 'ocserv-vpngw managed block' "$conf" || grep -q '^#\[vpngw\]# ' "$conf"; then
+        sed -i '/^# BEGIN ocserv-vpngw managed block/,/^# END ocserv-vpngw managed block/d' "$conf"
+        sed -i 's/^#\[vpngw\]# //' "$conf"
+        log "[INIT-VPNGW] Removed managed connect-script hooks from ocserv.conf"
+    fi
+}
+
+rm -rf "$vpngw_state_dir"
+
+if [ -z "$vpn_gateway" ] && [ -z "$vpn_gateways" ]; then
+    restore_config
+    log "[INIT-VPNGW] VPN_GATEWAY/VPN_GATEWAYS not set; clients exit via the default route"
     exit 0
 fi
+
+mkdir -p "$vpngw_state_dir"
 
 table="$vpn_gateway_table"
 prio="$vpn_gateway_rule_prio"
 
-# ---- IPv4 routing --------------------------------------------------------
-log "[INIT-VPNGW] Routing $vpn_subnet via $vpn_gateway (table $table)"
-ip route replace default via "$vpn_gateway" table "$table"
-ip rule show | grep -q "from $vpn_subnet lookup $table" \
-    || ip rule add from "$vpn_subnet" lookup "$table" priority "$prio"
+# ---- Named gateways (per-user routing tables) ------------------------------
+if [ -n "$vpn_gateways" ]; then
+    kv_pairs "$vpn_gateways" > "$vpngw_state_dir/gateways.tmp"
+    idx=0
+    while read -r name gw4; do
+        case "$name" in
+            direct)
+                log_error "[INIT-VPNGW] VPN_GATEWAYS: 'direct' is a reserved gateway name"
+                exit 1
+                ;;
+            *[!a-zA-Z0-9_]*)
+                log_error "[INIT-VPNGW] VPN_GATEWAYS: invalid gateway name '$name' (use letters, digits, _)"
+                exit 1
+                ;;
+        esac
+        idx=$((idx + 1))
+        gw_table=$((vpn_gateway_table + idx))
+        gw6="$(kv_get "$vpn_gateways6" "$name")"
+        log "[INIT-VPNGW] Gateway '$name': table $gw_table via $gw4${gw6:+ / $gw6}"
+        ip route replace default via "$gw4" table "$gw_table"
+        if [ -n "$gw6" ]; then
+            ip -6 route replace default via "$gw6" table "$gw_table" \
+                || log_error "[INIT-VPNGW] Warning: could not add IPv6 route for gateway '$name'"
+        fi
+        printf '%s %s %s %s\n' "$name" "$gw_table" "$gw4" "${gw6:--}" >> "$vpngw_state_dir/gateways"
+    done < "$vpngw_state_dir/gateways.tmp"
+    rm -f "$vpngw_state_dir/gateways.tmp"
+fi
 
-# ---- IPv6 routing (only if an upstream v6 gateway is provided) ------------
-if [ -n "${vpn_gateway6:-}" ]; then
-    log "[INIT-VPNGW] Routing $ipv6_subnet via $vpn_gateway6 (table $table)"
-    ip -6 route replace default via "$vpn_gateway6" table "$table" \
-        || log_error "[INIT-VPNGW] Warning: could not add IPv6 gateway route"
-    ip -6 rule show 2>/dev/null | grep -q "from $ipv6_subnet lookup $table" \
-        || ip -6 rule add from "$ipv6_subnet" lookup "$table" priority "$prio" \
-        || log_error "[INIT-VPNGW] Warning: could not add IPv6 policy rule"
+# ---- Per-user map validation ----------------------------------------------
+if [ -n "$vpn_user_gateway" ]; then
+    kv_pairs "$vpn_user_gateway" > "$vpngw_state_dir/users.tmp"
+    while read -r user gwname; do
+        if [ "$gwname" != "direct" ] \
+            && ! awk -v n="$gwname" '$1 == n { found = 1 } END { exit !found }' \
+                "$vpngw_state_dir/gateways" 2>/dev/null; then
+            log_error "[INIT-VPNGW] VPN_USER_GATEWAY: unknown gateway '$gwname' for user '$user' (define it in VPN_GATEWAYS)"
+            exit 1
+        fi
+        log "[INIT-VPNGW] User '$user' routes via gateway '$gwname'"
+        printf '%s %s\n' "$user" "$gwname" >> "$vpngw_state_dir/users"
+    done < "$vpngw_state_dir/users.tmp"
+    rm -f "$vpngw_state_dir/users.tmp"
+fi
+
+# ---- Default gateway: IPv4 routing -----------------------------------------
+if [ -n "$vpn_gateway" ]; then
+    log "[INIT-VPNGW] Routing $vpn_subnet via $vpn_gateway (table $table)"
+    ip route replace default via "$vpn_gateway" table "$table"
+    ip rule show | grep -q "from $vpn_subnet lookup $table" \
+        || ip rule add from "$vpn_subnet" lookup "$table" priority "$prio"
+
+    # ---- Default gateway: IPv6 routing (only with an upstream v6 gateway) ---
+    if [ -n "${vpn_gateway6:-}" ]; then
+        log "[INIT-VPNGW] Routing $ipv6_subnet via $vpn_gateway6 (table $table)"
+        ip -6 route replace default via "$vpn_gateway6" table "$table" \
+            || log_error "[INIT-VPNGW] Warning: could not add IPv6 gateway route"
+        ip -6 rule show 2>/dev/null | grep -q "from $ipv6_subnet lookup $table" \
+            || ip -6 rule add from "$ipv6_subnet" lookup "$table" priority "$prio" \
+            || log_error "[INIT-VPNGW] Warning: could not add IPv6 policy rule"
+    fi
 fi
 
 # ---- Kill switch (defense in depth) --------------------------------------
-# The policy route already forces client traffic to the gateway, but if that
+# The policy routes already force client traffic to the gateways, but if a
 # route is ever missing the kernel would fall through to the main table and leak
 # out the WAN. These nft rules make that explicit and fail-closed:
-#   * IPv4: allow client traffic out the WAN ONLY toward the gateway next-hop;
-#           drop anything else (e.g. a fall-through to the docker bridge).
-#   * IPv6 with a v6 gateway: same next-hop guard as IPv4.
-#   * IPv6 without a v6 gateway: no v6 path, so drop forwarded client v6 outright
-#           (otherwise it would bypass the v4-only policy rule).
+#   * Per-user gateways: each named gateway gets an address set (filled by the
+#     connect hook); traffic from those addresses may exit the WAN ONLY toward
+#     that gateway's next-hop and never falls through to the default guard.
+#   * "direct" users: an accept set so they bypass the default guard.
+#   * v6_drop: forwarded IPv6 from users whose gateway has no IPv6 is dropped
+#     outright (otherwise it would bypass the v4-only policy rule).
+#   * Default gateway (IPv4/IPv6): same next-hop guard for the whole subnet.
 case "$vpn_if" in
     *+) vpn_ifname="${vpn_if%+}*" ;;
     *)  vpn_ifname="$vpn_if" ;;
 esac
 
-if [ -n "${vpn_gateway6:-}" ]; then
-    killswitch6="ip6 saddr $ipv6_subnet oifname \"$wan_if\" rt ip6 nexthop != $vpn_gateway6 drop"
-else
-    killswitch6="meta nfproto ipv6 iifname \"$vpn_ifname\" drop"
+nft_sets=""
+user_rules=""
+if [ -f "$vpngw_state_dir/gateways" ]; then
+    while read -r name gw_table gw4 gw6; do
+        nft_sets="$nft_sets
+    set gw_${name}_v4 { type ipv4_addr; }"
+        user_rules="$user_rules
+        ip saddr @gw_${name}_v4 oifname \"$wan_if\" rt ip nexthop != $gw4 drop
+        ip saddr @gw_${name}_v4 oifname \"$wan_if\" accept"
+        if [ "$gw6" != "-" ]; then
+            nft_sets="$nft_sets
+    set gw_${name}_v6 { type ipv6_addr; }"
+            user_rules="$user_rules
+        ip6 saddr @gw_${name}_v6 oifname \"$wan_if\" rt ip6 nexthop != $gw6 drop
+        ip6 saddr @gw_${name}_v6 oifname \"$wan_if\" accept"
+        fi
+    done < "$vpngw_state_dir/gateways"
+fi
+if [ -f "$vpngw_state_dir/users" ]; then
+    nft_sets="$nft_sets
+    set direct_v4 { type ipv4_addr; }
+    set direct_v6 { type ipv6_addr; }
+    set v6_drop { type ipv6_addr; }"
+    user_rules="$user_rules
+        ip saddr @direct_v4 oifname \"$wan_if\" accept
+        ip6 saddr @direct_v6 oifname \"$wan_if\" accept
+        ip6 saddr @v6_drop drop"
+fi
+
+default_rules=""
+if [ -n "$vpn_gateway" ]; then
+    default_rules="ip saddr $vpn_subnet oifname \"$wan_if\" rt ip nexthop != $vpn_gateway drop"
+    if [ -n "${vpn_gateway6:-}" ]; then
+        default_rules="$default_rules
+        ip6 saddr $ipv6_subnet oifname \"$wan_if\" rt ip6 nexthop != $vpn_gateway6 drop"
+    else
+        default_rules="$default_rules
+        meta nfproto ipv6 iifname \"$vpn_ifname\" drop"
+    fi
 fi
 
 nft delete table inet ocserv_gw 2>/dev/null || true
 if nft -f - <<EOF
-table inet ocserv_gw {
+table inet ocserv_gw {$nft_sets
     chain forward {
-        type filter hook forward priority -10; policy accept;
-        ip saddr $vpn_subnet oifname "$wan_if" rt ip nexthop != $vpn_gateway drop
-        $killswitch6
+        type filter hook forward priority -10; policy accept;$user_rules
+        $default_rules
     }
 }
 EOF
@@ -73,6 +184,39 @@ then
     log "[INIT-VPNGW] Kill-switch installed (table inet ocserv_gw)"
 else
     log_error "[INIT-VPNGW] Warning: kill-switch nft rules failed to load; relying on policy routing only"
+fi
+
+# ---- ocserv connect/disconnect hook ---------------------------------------
+# Per-user rules can only be installed when a session gets its IP, so ocserv
+# must run our hook on connect/disconnect. We manage the config directives
+# ourselves: an existing user-configured script is commented out (with a
+# restore marker), recorded in the state dir, and chain-called by our hook.
+if [ -f "$vpngw_state_dir/users" ]; then
+    if [ ! -f "$conf" ]; then
+        log_error "[INIT-VPNGW] $conf not found; cannot install connect-script hook"
+        exit 1
+    fi
+    restore_config
+    orig_connect="$(sed -n 's/^connect-script[[:space:]]*=[[:space:]]*//p' "$conf" | head -1 | tr -d '"')"
+    orig_disconnect="$(sed -n 's/^disconnect-script[[:space:]]*=[[:space:]]*//p' "$conf" | head -1 | tr -d '"')"
+    if [ -n "$orig_connect" ]; then
+        printf '%s\n' "$orig_connect" > "$vpngw_state_dir/user-connect-script"
+        log "[INIT-VPNGW] Chaining existing connect-script: $orig_connect"
+    fi
+    if [ -n "$orig_disconnect" ]; then
+        printf '%s\n' "$orig_disconnect" > "$vpngw_state_dir/user-disconnect-script"
+        log "[INIT-VPNGW] Chaining existing disconnect-script: $orig_disconnect"
+    fi
+    sed -i 's/^connect-script[[:space:]]*=/#[vpngw]# &/; s/^disconnect-script[[:space:]]*=/#[vpngw]# &/' "$conf"
+    cat >> "$conf" <<'EOF'
+# BEGIN ocserv-vpngw managed block (added by init-vpngw; do not edit)
+connect-script = /usr/local/bin/ocserv-vpngw-script
+disconnect-script = /usr/local/bin/ocserv-vpngw-script
+# END ocserv-vpngw managed block
+EOF
+    log "[INIT-VPNGW] Installed connect/disconnect hook in ocserv.conf"
+else
+    restore_config
 fi
 
 log "[INIT-VPNGW] Gateway routing active"
