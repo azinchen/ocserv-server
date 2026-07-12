@@ -91,9 +91,15 @@ case "$reason" in
         [ -n "$ip4" ] || fail_closed "no IP_REMOTE in connect event"
         cleanup_session
         if [ "$gwname" = "direct" ]; then
+            # Steer the session to the main table so it escapes the
+            # subnet-wide VPN_GATEWAY rule and exits via the default route
+            ip rule add from "$ip4" lookup main priority "$prio" \
+                || fail_closed "cannot add direct policy rule"
             nft add element inet ocserv_gw direct_v4 "{ $ip4 }" \
                 || fail_closed "cannot add direct_v4 kill-switch entry"
             if [ -n "$ip6" ]; then
+                ip -6 rule add from "$ip6" lookup main priority "$prio" \
+                    || fail_closed "cannot add direct IPv6 policy rule"
                 nft add element inet ocserv_gw direct_v6 "{ $ip6 }" \
                     || fail_closed "cannot add direct_v6 kill-switch entry"
             fi

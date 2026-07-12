@@ -15,7 +15,7 @@ Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
 
 | Variable | Default | Description |
 |---|---|---|
-| `VPN_GATEWAY` | _(unset)_ | Upstream gateway IP. Steers `VPN_SUBNET` to it and installs the kill switch. Unset = normal standalone ocserv. |
+| `VPN_GATEWAY` | _(unset)_ | Upstream gateway IP. Steers `VPN_SUBNET` to it and installs the kill switch. Unset or `direct` = normal standalone ocserv (clients exit via the ISP). |
 | `VPN_GATEWAY6` | _(unset)_ | Upstream IPv6 gateway. Set it to route the IPv6 client subnet too; unset = forwarded client IPv6 is dropped. |
 | `VPN_GATEWAY_TABLE` | `100` | Routing table used for the gateway default route. Named gateways use the following tables (101, 102, …). |
 | `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
@@ -78,6 +78,15 @@ environment:
   - VPN_GATEWAY=172.28.0.2                     # optional default for everyone else
 ```
 
+Or the other way around — everyone through the upstream VPN, but one user out the ISP directly:
+
+```yaml
+environment:
+  - VPN_SUBNET=10.20.0.0/24
+  - VPN_GATEWAY=172.28.0.2                     # everyone -> nordvpn
+  - VPN_USER_GATEWAY=alex=direct               # except alex -> ISP (default route)
+```
+
 ### How it works
 
 Routing is keyed on the client's **source IP**, and a user's IP is only known when their session comes up. So `init-vpngw` prepares one routing table and one kill-switch set per named gateway at boot, and installs `connect-script`/`disconnect-script` hooks into `ocserv.conf` (a managed, marked block — an existing script you configured is chain-called and restored if you disable the feature). On connect the hook looks the username up and adds a `/32` policy rule plus a kill-switch set entry for the session's address; on disconnect it removes them:
@@ -98,7 +107,7 @@ Each named gateway gets its own next-hop guard in the `inet ocserv_gw` nft table
 ### Details
 
 - **Unmapped users** follow `VPN_GATEWAY` if set, otherwise the container's default route — exactly the classic behavior.
-- **`direct`** is a reserved gateway name: a user mapped to it exits via the container's default route even when `VPN_GATEWAY` is set for everyone else.
+- **`direct`** is a reserved gateway name: a user mapped to it gets a per-session rule pointing at the **main** routing table, so they exit via the container's default route (the ISP) even when `VPN_GATEWAY` steers everyone else. Note there is deliberately no kill switch for a `direct` user — they behave like a standalone ocserv client. `VPN_GATEWAY=direct` is also accepted as an explicit way to say "unmapped users exit via the ISP" (same as leaving it unset).
 - **IPv6:** give a gateway an IPv6 address in `VPN_GATEWAYS6` and its users' IPv6 is policy-routed the same way. A gateway without one has its users' forwarded IPv6 **dropped**, so it can't bypass the IPv4 rule.
 - **Validation:** referencing an undefined gateway name in `VPN_USER_GATEWAY` fails container startup loudly.
 - Usernames containing `,` or `=` can't be expressed in the map.
