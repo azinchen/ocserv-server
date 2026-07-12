@@ -22,12 +22,8 @@ jobs:
       - name: Determine published version
         id: version
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            VERSION="${{ github.ref_name }}"
-          else
-            SHORT_SHA="$(git rev-parse --short HEAD)"
-            VERSION="${{ github.ref_name }}@${SHORT_SHA}"
-          fi
+          # The tag or branch the workflow runs on (push tag or dispatch ref)
+          VERSION="${{ github.ref_name }}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Publishing wiki for version: ${VERSION}"
 
