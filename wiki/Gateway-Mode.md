@@ -1,0 +1,129 @@
+# Gateway Mode — route clients through another VPN
+
+Gateway mode sends your VPN clients' traffic **out through an upstream VPN container** instead of straight out the host. Typical use: chain ocserv in front of a commercial VPN (e.g. [NordVPN](https://github.com/azinchen/nordvpn)) so clients connect to your own OpenConnect server but exit with the commercial VPN's IP.
+
+```
+client ──openconnect──▶ ocserv ──policy route──▶ nordvpn ──tun0──▶ internet
+ 10.20.0.x             SNAT→172.28.0.3          (FORWARD_FROM)   commercial exit IP
+```
+
+ocserv keeps its own network namespace and its inbound listener works normally; only the **client subnet** is steered to the upstream gateway.
+
+## Enabling it
+
+Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
+
+| Variable | Default | Description |
+|---|---|---|
+| `VPN_GATEWAY` | _(unset)_ | Upstream gateway IP. Steers `VPN_SUBNET` to it and installs the kill switch. Unset = normal standalone ocserv. |
+| `VPN_GATEWAY6` | _(unset)_ | Upstream IPv6 gateway. Set it to route the IPv6 client subnet too; unset = forwarded client IPv6 is dropped. |
+| `VPN_GATEWAY_TABLE` | `100` | Routing table used for the gateway default route. |
+| `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
+
+When `VPN_GATEWAY` is unset, the `init-vpngw` service is a no-op — ocserv behaves exactly as a standalone server (including normal IPv6).
+
+## How it works
+
+1. **Source-based policy routing** — `init-vpngw` adds `ip rule from <VPN_SUBNET> lookup <table>` and a default route in that table via `VPN_GATEWAY`. Only client-sourced packets follow it; ocserv's own traffic and the inbound listener keep the main default route.
+2. **Masquerade** — `init-nat` already SNATs clients to the container's own address, so the upstream sees a Docker-subnet source and needs **no return route** to your client subnet.
+3. **Kill switch** — a dedicated nft table (`inet ocserv_gw`) drops any client packet that would egress the WAN by a next-hop other than the gateway. See below.
+
+### Why not just set a default gateway?
+
+Pointing ocserv's **default route** at the upstream breaks inbound: a reply to a connecting client would follow the default route into the upstream tunnel and exit with the wrong source IP, so the client drops it. Source-based policy routing avoids this — the listener's replies stay on the main route, only client traffic is redirected.
+
+## Kill switch (fail-closed)
+
+The policy route already forces client traffic to the gateway, but the kill switch makes leaks impossible if that route is ever missing:
+
+```nft
+table inet ocserv_gw {
+    chain forward {
+        type filter hook forward priority -10; policy accept;
+        ip  saddr 10.20.0.0/24 oifname "eth0" rt ip  nexthop != 172.28.0.2 drop
+        ip6 saddr fd20:…::/64  oifname "eth0" rt ip6 nexthop != fd00::2    drop   # if VPN_GATEWAY6 set
+        # meta nfproto ipv6 iifname "vpns*" drop   # if VPN_GATEWAY6 unset
+    }
+}
+```
+
+What happens when the upstream is unavailable:
+
+| Situation | Result |
+|---|---|
+| Upstream tunnel **down** (container up) | Forwarded client packets have no `tun0` to exit on the upstream; the upstream's `FORWARD` policy `DROP` blocks them. **No leak.** |
+| Upstream container **stopped/absent** | The gateway IP doesn't answer ARP; the policy-routed packets are dropped at ocserv. **No leak.** |
+| Policy route somehow **missing** | The next-hop guard above drops client traffic instead of letting it fall through to the host. **No leak.** |
+
+In every case clients lose internet rather than leaking out the host's real IP.
+
+## IPv6
+
+- **Upstream is IPv4-only** (the NordVPN container is, by default): leave `VPN_GATEWAY6` unset. Forwarded client IPv6 is dropped so it can't bypass the IPv4 policy rule.
+- **Upstream is dual-stack**: set `VPN_GATEWAY6` to its IPv6 address. ocserv policy-routes `IPV6_SUBNET` to it with the same fail-closed next-hop guard. This also needs working IPv6 on the Docker network and the upstream forwarding IPv6 (see [Networking NAT and Routing#ipv6](Networking-NAT-and-Routing#ipv6)).
+
+## Upstream requirements (NordVPN example)
+
+The upstream must forward the Docker subnet out its tunnel. The companion [NordVPN image](https://github.com/azinchen/nordvpn) does this with `FORWARD_FROM`:
+
+```yaml
+networks:
+  vpnnet:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+services:
+  nordvpn:
+    image: azinchen/nordvpn:latest
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun]
+    sysctls:
+      - net.ipv4.ip_forward=1
+    environment:
+      - USER=service_username
+      - PASS=service_password
+      - COUNTRY=Netherlands
+      - FORWARD_FROM=172.28.0.0/24      # let the Docker net route out the tunnel
+    networks:
+      vpnnet:
+        ipv4_address: 172.28.0.2
+
+  ocserv:
+    image: azinchen/ocserv-server:latest
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun]
+    sysctls:
+      - net.ipv4.ip_forward=1
+    environment:
+      - VPN_SUBNET=10.20.0.0/24
+      - VPN_GATEWAY=172.28.0.2          # the nordvpn container
+    ports:
+      - "443:443/tcp"                   # published normally on ocserv itself
+      - "443:443/udp"
+    volumes:
+      - ./config:/etc/ocserv
+    networks:
+      vpnnet:
+        ipv4_address: 172.28.0.3
+```
+
+`FORWARD_FROM` must list the subnet ocserv SNATs into (the Docker network, `172.28.0.0/24`), not the client subnet.
+
+## Verify
+
+```bash
+# policy routing on ocserv
+docker exec ocserv-server ip rule
+docker exec ocserv-server ip route show table 100
+
+# kill switch
+docker exec ocserv-server nft list table inet ocserv_gw
+
+# a connected client's exit IP should equal the upstream's, not the host's
+docker exec ocserv-server sh -c 'curl -s https://1.1.1.1/cdn-cgi/trace | grep ^ip='
+```
+
+---
+
+Next: **[[Networking NAT and Routing]]** · **[[Troubleshooting]]**
