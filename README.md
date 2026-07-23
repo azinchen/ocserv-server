@@ -64,7 +64,7 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VPN_SUBNET` | `10.10.10.0/24` | VPN client subnet (must match `ipv4-network` in `ocserv.conf`) |
-| `WAN_IF` | `eth0` | WAN interface for NAT |
+| `WAN_IF` | _(auto)_ | WAN interface for NAT. Auto-detected from the container's default route (falls back to `eth0`); set explicitly to override |
 | `IPV6_NAT` | `0` | enable IPv6 masquerade (see the IPv6 notes on the wiki) |
 | `VPN_GATEWAY` | _(unset)_ | Route the client subnet out through an upstream gateway container (e.g. a NordVPN container with `FORWARD_FROM`) via source-based policy routing. Set to the gateway's IP. Adds a fail-closed nft kill switch (`inet ocserv_gw`) so client traffic can only leave toward the gateway. |
 | `VPN_GATEWAY6` | _(unset)_ | IPv6 gateway for gateway mode. If set, the IPv6 client subnet is policy-routed to it; if unset, forwarded client IPv6 is **dropped** to prevent leaks. |

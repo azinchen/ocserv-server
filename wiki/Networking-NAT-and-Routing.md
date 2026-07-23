@@ -33,7 +33,7 @@ table inet ocserv {
 ```
 
 - The masqueraded subnet comes from **`VPN_SUBNET`**.
-- The egress interface comes from **`WAN_IF`**.
+- The egress interface comes from **`WAN_IF`** (auto-detected from the default route when unset).
 - The tunnel interface pattern comes from **`VPN_IF`** (`vpns+` → `vpns*`).
 
 Inspect it live:
