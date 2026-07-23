@@ -24,6 +24,8 @@ vpn_gateways="${VPN_GATEWAYS:-}"
 vpn_gateways6="${VPN_GATEWAYS6:-}"
 vpn_user_gateway="${VPN_USER_GATEWAY:-}"
 vpn_gateway_user_rule_prio="${VPN_GATEWAY_USER_RULE_PRIO:-900}"
+forward_subnets="${FORWARD_SUBNETS:-}"
+forward_subnets6="${FORWARD_SUBNETS6:-}"
 
 # VPN_GATEWAY=direct is an explicit alias for "no default gateway": unmapped
 # users exit via the container's default route (the ISP)
@@ -55,4 +57,12 @@ kv_pairs() {
 # Print the value for a key in a "key=value,key=value" list (empty if absent)
 kv_get() {
     kv_pairs "${1:-}" | awk -v k="$2" '$1 == k { print $2; exit }'
+}
+
+# Print "subnet gateway" lines from a "subnet[=gateway],subnet[=gateway]" list
+# (gateway is "-" when the entry has no =gateway part)
+fwd_subnet_pairs() {
+    [ -n "${1:-}" ] || return 0
+    echo "$1" | tr ',' '\n' | \
+        awk -F= '{ gsub(/[[:space:]]/, "") } $1 != "" { print $1 " " ($2 != "" ? $2 : "-") }'
 }

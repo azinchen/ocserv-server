@@ -35,17 +35,6 @@ case "$vpn_if" in
     *)  vpn_ifname="$vpn_if" ;;
 esac
 
-# IPv4 NAT
-log "[INIT-NAT] Setting up IPv4 NAT for subnet $vpn_subnet via $wan_if"
-nat_rules="ip saddr $vpn_subnet oifname \"$wan_if\" masquerade"
-
-# IPv6 NAT (optional)
-if [ "$ipv6_nat" = "1" ]; then
-    log "[INIT-NAT] Setting up IPv6 NAT for subnet $ipv6_subnet via $wan_if"
-    nat_rules="$nat_rules
-        ip6 saddr $ipv6_subnet oifname \"$wan_if\" masquerade"
-fi
-
 # Gateway egress interfaces: an upstream gateway (VPN_GATEWAY / VPN_GATEWAYS)
 # may sit on a different interface than the WAN - e.g. a bridge to a VPN
 # sidecar container while the WAN is a macvlan ISP uplink. Masquerade and
@@ -82,16 +71,34 @@ for gw in $vpn_gateway6 $(kv_pairs "$vpn_gateways6" | awk '{print $2}'); do
     fi
 done
 
-for dev in $gw_ifs4; do
-    log "[INIT-NAT] Gateway egress via $dev: masquerading $vpn_subnet"
-    nat_rules="$nat_rules
-        ip saddr $vpn_subnet oifname \"$dev\" masquerade"
+# Masqueraded source subnets: the VPN client subnet plus any forwarded LAN
+# subnets (FORWARD_SUBNETS / FORWARD_SUBNETS6) that use this container as
+# their gateway. Each subnet is masqueraded via the WAN and via every
+# gateway egress interface.
+masq_subnets4="$vpn_subnet"
+for s in $(fwd_subnet_pairs "$forward_subnets" | awk '{print $1}'); do
+    masq_subnets4="$masq_subnets4 $s"
+done
+masq_subnets6="$ipv6_subnet"
+for s in $(fwd_subnet_pairs "$forward_subnets6" | awk '{print $1}'); do
+    masq_subnets6="$masq_subnets6 $s"
+done
+
+nat_rules=""
+for dev in $wan_if $gw_ifs4; do
+    for s in $masq_subnets4; do
+        log "[INIT-NAT] Masquerading $s via $dev"
+        nat_rules="$nat_rules
+        ip saddr $s oifname \"$dev\" masquerade"
+    done
 done
 if [ "$ipv6_nat" = "1" ]; then
-    for dev in $gw_ifs6; do
-        log "[INIT-NAT] Gateway egress via $dev: masquerading $ipv6_subnet"
-        nat_rules="$nat_rules
-        ip6 saddr $ipv6_subnet oifname \"$dev\" masquerade"
+    for dev in $wan_if $gw_ifs6; do
+        for s in $masq_subnets6; do
+            log "[INIT-NAT] Masquerading $s via $dev (IPv6)"
+            nat_rules="$nat_rules
+        ip6 saddr $s oifname \"$dev\" masquerade"
+        done
     done
 fi
 
@@ -119,8 +126,7 @@ table inet ocserv {
         iifname "$wan_if" oifname "$vpn_ifname" ct state related,established accept$gw_fwd_rules
     }
     chain postrouting {
-        type nat hook postrouting priority 100; policy accept;
-        $nat_rules
+        type nat hook postrouting priority 100; policy accept;$nat_rules
     }
 }
 EOF

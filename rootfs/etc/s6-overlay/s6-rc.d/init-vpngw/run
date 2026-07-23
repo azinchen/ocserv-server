@@ -96,6 +96,76 @@ if [ -n "$vpn_user_gateway" ]; then
     rm -f "$vpngw_state_dir/users.tmp"
 fi
 
+# ---- Forwarded LAN subnets -------------------------------------------------
+# FORWARD_SUBNETS / FORWARD_SUBNETS6 give extra source subnets (e.g. a LAN
+# routing through this container as its gateway) the same treatment as the
+# client subnet: a policy route to a gateway, masquerade (done by init-nat)
+# and a fail-closed next-hop guard in the kill switch. Entry forms:
+#   subnet          - follows VPN_GATEWAY / VPN_GATEWAY6 (direct when unset)
+#   subnet=name     - routes via a named VPN_GATEWAYS gateway
+#   subnet=direct   - explicit main-table (ISP) egress
+fwd_guard_rules=""
+add_fwd_subnet() { # $1 = -4|-6, $2 = subnet, $3 = gateway name ("-" = default)
+    fam="$1" subnet="$2" gwname="$3"
+    case "$gwname" in
+        -)
+            if [ "$fam" = "-4" ]; then gw="$vpn_gateway"; else gw="$vpn_gateway6"; fi
+            if [ -z "$gw" ]; then
+                log "[INIT-VPNGW] Forwarded subnet $subnet exits via the default route"
+                return 0
+            fi
+            gw_table="$table"
+            ;;
+        direct)
+            log "[INIT-VPNGW] Forwarded subnet $subnet exits via the default route"
+            return 0
+            ;;
+        *)
+            # shellcheck disable=SC2046
+            set -- $(awk -v n="$gwname" '$1 == n { print $2, $3, $4 }' \
+                "$vpngw_state_dir/gateways" 2>/dev/null)
+            if [ $# -lt 3 ]; then
+                log_error "[INIT-VPNGW] FORWARD_SUBNETS: unknown gateway '$gwname' for subnet $subnet (define it in VPN_GATEWAYS)"
+                exit 1
+            fi
+            gw_table="$1"
+            if [ "$fam" = "-4" ]; then gw="$2"; else gw="$3"; fi
+            if [ "$gw" = "-" ]; then
+                log_error "[INIT-VPNGW] FORWARD_SUBNETS6: gateway '$gwname' has no IPv6 address for subnet $subnet (set it in VPN_GATEWAYS6)"
+                exit 1
+            fi
+            ;;
+    esac
+    log "[INIT-VPNGW] Forwarded subnet $subnet routes via $gw (table $gw_table)"
+    if [ "$fam" = "-4" ]; then
+        ip rule show | grep -q "from $subnet lookup $gw_table" \
+            || ip rule add from "$subnet" lookup "$gw_table" priority "$prio"
+        fwd_guard_rules="$fwd_guard_rules
+        ip saddr $subnet oifname \"$wan_if\" rt ip nexthop != $gw drop"
+    else
+        ip -6 rule show 2>/dev/null | grep -q "from $subnet lookup $gw_table" \
+            || ip -6 rule add from "$subnet" lookup "$gw_table" priority "$prio" \
+            || log_error "[INIT-VPNGW] Warning: could not add IPv6 policy rule for $subnet"
+        fwd_guard_rules="$fwd_guard_rules
+        ip6 saddr $subnet oifname \"$wan_if\" rt ip6 nexthop != $gw drop"
+    fi
+}
+
+if [ -n "$forward_subnets" ]; then
+    fwd_subnet_pairs "$forward_subnets" > "$vpngw_state_dir/fwd4.tmp"
+    while read -r subnet gwname; do
+        add_fwd_subnet -4 "$subnet" "$gwname"
+    done < "$vpngw_state_dir/fwd4.tmp"
+    rm -f "$vpngw_state_dir/fwd4.tmp"
+fi
+if [ -n "$forward_subnets6" ]; then
+    fwd_subnet_pairs "$forward_subnets6" > "$vpngw_state_dir/fwd6.tmp"
+    while read -r subnet gwname; do
+        add_fwd_subnet -6 "$subnet" "$gwname"
+    done < "$vpngw_state_dir/fwd6.tmp"
+    rm -f "$vpngw_state_dir/fwd6.tmp"
+fi
+
 # ---- Default gateway: IPv4 routing -----------------------------------------
 if [ -n "$vpn_gateway" ]; then
     log "[INIT-VPNGW] Routing $vpn_subnet via $vpn_gateway (table $table)"
@@ -175,7 +245,7 @@ nft delete table inet ocserv_gw 2>/dev/null || true
 if nft -f - <<EOF
 table inet ocserv_gw {$nft_sets
     chain forward {
-        type filter hook forward priority -10; policy accept;$user_rules
+        type filter hook forward priority -10; policy accept;$user_rules$fwd_guard_rules
         $default_rules
     }
 }
