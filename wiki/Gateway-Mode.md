@@ -112,6 +112,34 @@ Each named gateway gets its own next-hop guard in the `inet ocserv_gw` nft table
 - **Validation:** referencing an undefined gateway name in `VPN_USER_GATEWAY` fails container startup loudly.
 - Usernames containing `,` or `=` can't be expressed in the map.
 
+## Forwarded LAN subnets
+
+Devices on your LAN can use the ocserv container as their **next-hop gateway** (a static route on the LAN router pointing a subnet at the container's address) and get the same egress treatment as VPN clients — without an ocserv session. List those source subnets in `FORWARD_SUBNETS`:
+
+```yaml
+environment:
+  - VPN_GATEWAYS=nl=172.28.0.2
+  - FORWARD_SUBNETS=192.168.50.0/24=nl,192.168.60.0/24=direct,10.30.0.0/24
+```
+
+Entry forms, mirroring the per-user map:
+
+| Form | Egress |
+|---|---|
+| `subnet` | follows `VPN_GATEWAY` (the default route if unset) |
+| `subnet=name` | the named `VPN_GATEWAYS` gateway |
+| `subnet=direct` | the container's default route (the ISP) |
+
+Each subnet gets:
+
+1. **Policy route** — `ip rule from <subnet>` into the mapped gateway's routing table (installed at startup; unlike per-user rules, no connect hook is needed since the subnet is static).
+2. **Masquerade** — `init-nat` SNATs the subnet out the WAN and every gateway egress interface, so neither the upstream nor the ISP needs a return route to it.
+3. **Kill switch** — a next-hop guard in `inet ocserv_gw`: the subnet's traffic may leave the WAN only toward its mapped gateway, otherwise it is dropped.
+
+IPv6 source subnets go in `FORWARD_SUBNETS6` with the same forms, mapped against `VPN_GATEWAY6` / `VPN_GATEWAYS6`; naming a gateway that has no IPv6 address fails startup loudly. IPv6 masquerade requires `IPV6_NAT=1`.
+
+> Referencing an undefined gateway name fails container startup, same as `VPN_USER_GATEWAY`. Remember the LAN router needs a static route for the *return* direction only if you skip masquerade — with `FORWARD_SUBNETS` the masquerade makes return routing automatic.
+
 ## Upstream requirements (NordVPN example)
 
 The upstream must forward the Docker subnet out its tunnel. The companion [NordVPN image](https://github.com/azinchen/nordvpn) does this with `FORWARD_FROM`:

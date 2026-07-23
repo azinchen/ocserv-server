@@ -73,6 +73,8 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | `VPN_GATEWAYS` | _(unset)_ | Named upstream gateways for per-user routing, e.g. `nl=172.28.0.2,us=172.28.0.4`. Each gets its own routing table and kill-switch set. |
 | `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. A name without one has its users' forwarded IPv6 dropped (fail-closed). |
 | `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. Unmapped users follow `VPN_GATEWAY` (or the default route if unset); the reserved name `direct` sends a user out the container's default route (the ISP) even when `VPN_GATEWAY` is set. `VPN_GATEWAY=direct` is accepted as an explicit "no default gateway". |
+| `FORWARD_SUBNETS` | _(unset)_ | Extra source subnets (e.g. a LAN routing through this container as its gateway) that get the same treatment as the client subnet: policy route to a gateway, masquerade, and a fail-closed guard. Entries: `subnet` (follows `VPN_GATEWAY`), `subnet=name` (named `VPN_GATEWAYS` gateway), `subnet=direct` (ISP egress). E.g. `192.168.50.0/24=nl,192.168.60.0/24=direct`. |
+| `FORWARD_SUBNETS6` | _(unset)_ | Same for IPv6 source subnets, mapping to `VPN_GATEWAY6` / `VPN_GATEWAYS6`. A named gateway without an IPv6 address is a config error. Masqueraded only when `IPV6_NAT=1`. |
 | `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (must be lower than `VPN_GATEWAY_RULE_PRIO` to win). |
 
 Full reference: [Configuration Reference](https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference).
