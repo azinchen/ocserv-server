@@ -9,7 +9,7 @@ These are read by the container's startup scripts (`backend-functions`) and driv
 | Variable | Default | Description |
 |---|---|---|
 | `VPN_SUBNET` | `10.10.10.0/24` | IPv4 subnet that gets source-NAT (masquerade) out of the WAN interface. **Must match the `ipv4-network`/`ipv4-netmask` in your `ocserv.conf`.** |
-| `WAN_IF` | `eth0` | The container interface used as the NAT egress (the "outside"). |
+| `WAN_IF` | _(auto)_ | The container interface used as the NAT egress (the "outside"). By default it is auto-detected from the container's IPv4 default route, which handles multi-network setups (e.g. a macvlan ISP uplink on `eth1`); falls back to `eth0` if there is no default route. Set explicitly to override. |
 | `VPN_IF` | `vpns+` | Interface pattern for the tun devices ocserv creates. The trailing `+` is translated to the nftables wildcard `vpns*`. Matches `device = vpns` in `ocserv.conf`. |
 | `IPV6_FORWARD` | `1` | Enable IPv6 forwarding sysctl inside the container. |
 | `IPV6_NAT` | `0` | Enable IPv6 masquerade for `IPV6_SUBNET`. Off by default — see the IPv6 warning below. |

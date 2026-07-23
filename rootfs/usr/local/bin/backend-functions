@@ -4,7 +4,17 @@
 setcap_net_bind="${SETCAP_NET_BIND:-1}"
 setcap_net_admin="${SETCAP_NET_ADMIN:-1}"
 vpn_subnet="${VPN_SUBNET:-10.10.10.0/24}"
-wan_if="${WAN_IF:-eth0}"
+wan_if="${WAN_IF:-}"
+if [ -z "$wan_if" ]; then
+    # Auto-detect the WAN interface from the IPv4 default route. In a plain
+    # bridge network that is eth0, but with extra networks attached (e.g. a
+    # macvlan for the ISP uplink) the ISP-facing interface may be eth1 or
+    # later - Docker attaches networks in lexicographic order, so the name is
+    # not stable. The default route always points out the "outside".
+    wan_if="$(ip -4 route show default 2>/dev/null \
+        | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
+    wan_if="${wan_if:-eth0}"
+fi
 vpn_if="${VPN_IF:-vpns+}"
 vpn_gateway="${VPN_GATEWAY:-}"
 vpn_gateway6="${VPN_GATEWAY6:-}"
@@ -14,6 +24,11 @@ vpn_gateways="${VPN_GATEWAYS:-}"
 vpn_gateways6="${VPN_GATEWAYS6:-}"
 vpn_user_gateway="${VPN_USER_GATEWAY:-}"
 vpn_gateway_user_rule_prio="${VPN_GATEWAY_USER_RULE_PRIO:-900}"
+
+# VPN_GATEWAY=direct is an explicit alias for "no default gateway": unmapped
+# users exit via the container's default route (the ISP)
+[ "$vpn_gateway" = "direct" ] && vpn_gateway=""
+[ "$vpn_gateway6" = "direct" ] && vpn_gateway6=""
 
 # Runtime state shared between init-vpngw and the ocserv connect/disconnect hook
 vpngw_state_dir="/run/ocserv-vpngw"

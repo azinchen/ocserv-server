@@ -29,7 +29,7 @@ When `VPN_GATEWAY` and `VPN_GATEWAYS` are unset, the `init-vpngw` service is a n
 ## How it works
 
 1. **Source-based policy routing** — `init-vpngw` adds `ip rule from <VPN_SUBNET> lookup <table>` and a default route in that table via `VPN_GATEWAY`. Only client-sourced packets follow it; ocserv's own traffic and the inbound listener keep the main default route.
-2. **Masquerade** — `init-nat` already SNATs clients to the container's own address, so the upstream sees a Docker-subnet source and needs **no return route** to your client subnet.
+2. **Masquerade** — `init-nat` already SNATs clients to the container's own address, so the upstream sees a Docker-subnet source and needs **no return route** to your client subnet. This also works when the gateway sits on a **different interface** than the WAN (e.g. a bridge to the sidecar plus a macvlan ISP uplink): `init-nat` resolves each gateway's egress interface from the routing table and installs a masquerade rule for it too.
 3. **Kill switch** — a dedicated nft table (`inet ocserv_gw`) drops any client packet that would egress the WAN by a next-hop other than the gateway. See below.
 
 ### Why not just set a default gateway?

@@ -46,6 +46,67 @@ if [ "$ipv6_nat" = "1" ]; then
         ip6 saddr $ipv6_subnet oifname \"$wan_if\" masquerade"
 fi
 
+# Gateway egress interfaces: an upstream gateway (VPN_GATEWAY / VPN_GATEWAYS)
+# may sit on a different interface than the WAN - e.g. a bridge to a VPN
+# sidecar container while the WAN is a macvlan ISP uplink. Masquerade and
+# forward via each such interface too, so the upstream sees this container's
+# address and needs no return route to the client subnet.
+gw_dev() { # print the egress interface for a gateway IP ($1 = -4|-6, $2 = IP)
+    ip "$1" route get "$2" 2>/dev/null \
+        | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}'
+}
+
+gw_ifs4=""
+for gw in $vpn_gateway $(kv_pairs "$vpn_gateways" | awk '{print $2}'); do
+    dev="$(gw_dev -4 "$gw")"
+    if [ -z "$dev" ]; then
+        log_error "[INIT-NAT] Warning: cannot resolve egress interface for gateway $gw"
+    elif [ "$dev" != "$wan_if" ]; then
+        case " $gw_ifs4 " in
+            *" $dev "*) ;;
+            *) gw_ifs4="$gw_ifs4 $dev" ;;
+        esac
+    fi
+done
+
+gw_ifs6=""
+for gw in $vpn_gateway6 $(kv_pairs "$vpn_gateways6" | awk '{print $2}'); do
+    dev="$(gw_dev -6 "$gw")"
+    if [ -z "$dev" ]; then
+        log_error "[INIT-NAT] Warning: cannot resolve egress interface for gateway $gw"
+    elif [ "$dev" != "$wan_if" ]; then
+        case " $gw_ifs6 " in
+            *" $dev "*) ;;
+            *) gw_ifs6="$gw_ifs6 $dev" ;;
+        esac
+    fi
+done
+
+for dev in $gw_ifs4; do
+    log "[INIT-NAT] Gateway egress via $dev: masquerading $vpn_subnet"
+    nat_rules="$nat_rules
+        ip saddr $vpn_subnet oifname \"$dev\" masquerade"
+done
+if [ "$ipv6_nat" = "1" ]; then
+    for dev in $gw_ifs6; do
+        log "[INIT-NAT] Gateway egress via $dev: masquerading $ipv6_subnet"
+        nat_rules="$nat_rules
+        ip6 saddr $ipv6_subnet oifname \"$dev\" masquerade"
+    done
+fi
+
+gw_fwd_rules=""
+gw_fwd_seen=""
+for dev in $gw_ifs4 $gw_ifs6; do
+    case " $gw_fwd_seen " in
+        *" $dev "*) continue ;;
+    esac
+    gw_fwd_seen="$gw_fwd_seen $dev"
+    gw_fwd_rules="$gw_fwd_rules
+        iifname \"$vpn_ifname\" oifname \"$dev\" accept
+        iifname \"$dev\" oifname \"$vpn_ifname\" ct state related,established accept"
+done
+
 # Apply the ruleset in a dedicated table. Deleting it first keeps this idempotent
 # across service restarts. Forwarding rules in the inet family cover IPv4 and IPv6.
 log "[INIT-NAT] Setting up forwarding rules"
@@ -55,7 +116,7 @@ table inet ocserv {
     chain forward {
         type filter hook forward priority 0; policy accept;
         iifname "$vpn_ifname" oifname "$wan_if" accept
-        iifname "$wan_if" oifname "$vpn_ifname" ct state related,established accept
+        iifname "$wan_if" oifname "$vpn_ifname" ct state related,established accept$gw_fwd_rules
     }
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
