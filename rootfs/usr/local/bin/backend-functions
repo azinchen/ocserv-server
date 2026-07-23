@@ -25,6 +25,11 @@ vpn_gateways6="${VPN_GATEWAYS6:-}"
 vpn_user_gateway="${VPN_USER_GATEWAY:-}"
 vpn_gateway_user_rule_prio="${VPN_GATEWAY_USER_RULE_PRIO:-900}"
 
+# VPN_GATEWAY=direct is an explicit alias for "no default gateway": unmapped
+# users exit via the container's default route (the ISP)
+[ "$vpn_gateway" = "direct" ] && vpn_gateway=""
+[ "$vpn_gateway6" = "direct" ] && vpn_gateway6=""
+
 # Runtime state shared between init-vpngw and the ocserv connect/disconnect hook
 vpngw_state_dir="/run/ocserv-vpngw"
 ipv6_forward="${IPV6_FORWARD:-1}"

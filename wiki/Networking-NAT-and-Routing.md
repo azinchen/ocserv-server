@@ -35,6 +35,7 @@ table inet ocserv {
 - The masqueraded subnet comes from **`VPN_SUBNET`**.
 - The egress interface comes from **`WAN_IF`** (auto-detected from the default route when unset).
 - The tunnel interface pattern comes from **`VPN_IF`** (`vpns+` → `vpns*`).
+- If an upstream gateway (`VPN_GATEWAY` / `VPN_GATEWAYS`) sits on a different interface than the WAN (multi-network setups, e.g. a macvlan ISP uplink plus a bridge to a VPN sidecar), that gateway's egress interface gets its own masquerade and forward rules automatically.
 
 Inspect it live:
 

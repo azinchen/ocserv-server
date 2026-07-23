@@ -27,11 +27,6 @@ set -eu
 
 conf=/etc/ocserv/ocserv.conf
 
-# VPN_GATEWAY=direct is an explicit alias for "no default gateway": unmapped
-# users exit via the container's default route (the ISP)
-[ "$vpn_gateway" = "direct" ] && vpn_gateway=""
-[ "$vpn_gateway6" = "direct" ] && vpn_gateway6=""
-
 # Undo our managed edits in ocserv.conf (managed block + commented-out user
 # hooks). Only touches the file if our markers are present.
 restore_config() {
