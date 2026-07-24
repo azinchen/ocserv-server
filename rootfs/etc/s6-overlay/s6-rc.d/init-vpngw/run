@@ -51,6 +51,16 @@ mkdir -p "$vpngw_state_dir"
 table="$vpn_gateway_table"
 prio="$vpn_gateway_rule_prio"
 
+# Per-user mode is active when a static map (VPN_USER_GATEWAY) and/or a map file
+# (VPN_USER_GATEWAY_FILE) is configured. With a file configured the hook is
+# installed even when the map is currently empty, so mappings can be added at
+# runtime and applied with vpngw-reload (no container restart).
+if [ -n "$vpn_user_gateway" ] || [ -n "$vpn_user_gateway_file" ]; then
+    vpngw_user_mode=1
+else
+    vpngw_user_mode=0
+fi
+
 # ---- Named gateways (per-user routing tables) ------------------------------
 if [ -n "$vpn_gateways" ]; then
     kv_pairs "$vpn_gateways" > "$vpngw_state_dir/gateways.tmp"
@@ -80,20 +90,19 @@ if [ -n "$vpn_gateways" ]; then
     rm -f "$vpngw_state_dir/gateways.tmp"
 fi
 
-# ---- Per-user map validation ----------------------------------------------
-if [ -n "$vpn_user_gateway" ]; then
-    kv_pairs "$vpn_user_gateway" > "$vpngw_state_dir/users.tmp"
+# ---- Per-user map (VPN_USER_GATEWAY and/or VPN_USER_GATEWAY_FILE) -----------
+if [ "$vpngw_user_mode" = 1 ]; then
+    mkdir -p "$vpngw_state_dir/sessions"
+    if ! vpngw_build_users; then
+        log_error "[INIT-VPNGW] Invalid user-gateway map; aborting"
+        exit 1
+    fi
     while read -r user gwname; do
-        if [ "$gwname" != "direct" ] \
-            && ! awk -v n="$gwname" '$1 == n { found = 1 } END { exit !found }' \
-                "$vpngw_state_dir/gateways" 2>/dev/null; then
-            log_error "[INIT-VPNGW] VPN_USER_GATEWAY: unknown gateway '$gwname' for user '$user' (define it in VPN_GATEWAYS)"
-            exit 1
-        fi
-        log "[INIT-VPNGW] User '$user' routes via gateway '$gwname'"
-        printf '%s %s\n' "$user" "$gwname" >> "$vpngw_state_dir/users"
-    done < "$vpngw_state_dir/users.tmp"
-    rm -f "$vpngw_state_dir/users.tmp"
+        [ -n "$user" ] && log "[INIT-VPNGW] User '$user' routes via gateway '$gwname'"
+    done < "$vpngw_state_dir/users"
+    if [ -n "$vpn_user_gateway_file" ]; then
+        log "[INIT-VPNGW] User-gateway map file: $vpn_user_gateway_file (reload with vpngw-reload)"
+    fi
 fi
 
 # ---- Default gateway: IPv4 routing -----------------------------------------

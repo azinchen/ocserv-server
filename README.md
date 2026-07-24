@@ -73,6 +73,8 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | `VPN_GATEWAYS` | _(unset)_ | Named upstream gateways for per-user routing, e.g. `nl=172.28.0.2,us=172.28.0.4`. Each gets its own routing table and kill-switch set. |
 | `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. A name without one has its users' forwarded IPv6 dropped (fail-closed). |
 | `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. Unmapped users follow `VPN_GATEWAY` (or the default route if unset); the reserved name `direct` sends a user out the container's default route (the ISP) even when `VPN_GATEWAY` is set. `VPN_GATEWAY=direct` is accepted as an explicit "no default gateway". |
+| `VPN_USER_GATEWAY_FILE` | _(unset)_ | Path to a mapping file (one `user gateway` per line; `#` comments allowed) — an alternative to a large `VPN_USER_GATEWAY` value. Merged with it (file wins on conflict). Edit and run `docker exec <container> vpngw-reload` to apply changes to live sessions without a restart. See [Gateway Mode](Gateway-Mode#hot-reloading-the-user-map). |
+| `VPN_USER_GATEWAY_WATCH` | `0` | Set to `1` to auto-run `vpngw-reload` whenever `VPN_USER_GATEWAY_FILE` changes (no manual command needed). |
 | `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (must be lower than `VPN_GATEWAY_RULE_PRIO` to win). |
 
 Full reference: [Configuration Reference](https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference).

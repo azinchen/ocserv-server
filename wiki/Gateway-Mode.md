@@ -22,6 +22,8 @@ Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
 | `VPN_GATEWAYS` | _(unset)_ | Named gateways for [per-user routing](#per-user-gateways), e.g. `nl=172.28.0.2,us=172.28.0.4`. |
 | `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. |
 | `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. |
+| `VPN_USER_GATEWAY_FILE` | _(unset)_ | File holding the username → gateway map (one per line), reloadable at runtime. See [Hot-reloading the user map](#hot-reloading-the-user-map). |
+| `VPN_USER_GATEWAY_WATCH` | `0` | `1` = auto-`vpngw-reload` when the map file changes. |
 | `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (wins over the subnet rule). |
 
 When `VPN_GATEWAY` and `VPN_GATEWAYS` are unset, the `init-vpngw` service is a no-op — ocserv behaves exactly as a standalone server (including normal IPv6).
@@ -109,8 +111,33 @@ Each named gateway gets its own next-hop guard in the `inet ocserv_gw` nft table
 - **Unmapped users** follow `VPN_GATEWAY` if set, otherwise the container's default route — exactly the classic behavior.
 - **`direct`** is a reserved gateway name: a user mapped to it gets a per-session rule pointing at the **main** routing table, so they exit via the container's default route (the ISP) even when `VPN_GATEWAY` steers everyone else. Note there is deliberately no kill switch for a `direct` user — they behave like a standalone ocserv client. `VPN_GATEWAY=direct` is also accepted as an explicit way to say "unmapped users exit via the ISP" (same as leaving it unset).
 - **IPv6:** give a gateway an IPv6 address in `VPN_GATEWAYS6` and its users' IPv6 is policy-routed the same way. A gateway without one has its users' forwarded IPv6 **dropped**, so it can't bypass the IPv4 rule.
-- **Validation:** referencing an undefined gateway name in `VPN_USER_GATEWAY` fails container startup loudly.
-- Usernames containing `,` or `=` can't be expressed in the map.
+- **Validation:** referencing an undefined gateway name fails loudly — at container startup for `VPN_USER_GATEWAY`, or at reload time for `VPN_USER_GATEWAY_FILE` (the reload aborts and live sessions are left unchanged).
+- Usernames containing `,` or `=` can't be expressed in the inline `VPN_USER_GATEWAY`; use `VPN_USER_GATEWAY_FILE` (space-separated) if a name contains `=`.
+
+## Hot-reloading the user map
+
+For a large or frequently-changing map, keeping it inline in `VPN_USER_GATEWAY` (and in your compose file) is awkward. Point **`VPN_USER_GATEWAY_FILE`** at a file instead — one mapping per line, `#` comments and blank lines allowed:
+
+```
+# /etc/ocserv/user-gateway.map   (under the mounted /etc/ocserv volume)
+alice            nl
+bob              us
+roadwarrior-07   direct
+```
+
+`user gateway` and `user=gateway` are both accepted. The file and `VPN_USER_GATEWAY` are merged; on a conflicting username the **file wins**. Put the file under the `/etc/ocserv` volume so you can edit it from the host.
+
+**Apply changes without restarting the container:**
+
+```bash
+docker exec <container> vpngw-reload
+```
+
+`vpngw-reload` rebuilds the map and applies the differences to **already-connected sessions in place** — no tunnel drop. A user whose gateway changed is moved to the new one, a newly-added user is steered immediately, and a removed user falls back to `VPN_GATEWAY`/the default route. The new file is validated in full first: if it names an undefined gateway the reload aborts and live sessions are left exactly as they were.
+
+To apply on every save automatically, set **`VPN_USER_GATEWAY_WATCH=1`** — a small watcher service runs `vpngw-reload` for you whenever the file changes.
+
+> The connect/disconnect hook is installed whenever `VPN_USER_GATEWAY_FILE` is set, even if the file is empty or absent at startup — so you can start with no mappings and add them entirely at runtime. Named gateways themselves (`VPN_GATEWAYS`) are still fixed at startup; the file changes only *which user uses which existing gateway*.
 
 ## Upstream requirements (NordVPN example)
 

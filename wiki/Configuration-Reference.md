@@ -21,6 +21,8 @@ These are read by the container's startup scripts (`backend-functions`) and driv
 | `VPN_GATEWAYS` | _(unset)_ | Named upstream gateways for per-user routing, e.g. `nl=172.28.0.2,us=172.28.0.4`. See [Gateway Mode#per-user-gateways](Gateway-Mode#per-user-gateways). |
 | `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. A gateway without one has its users' forwarded IPv6 dropped (fail-closed). |
 | `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. Unmapped users follow `VPN_GATEWAY` or the default route; the reserved name `direct` sends a user out the container's default route (the ISP) even when `VPN_GATEWAY` is set. |
+| `VPN_USER_GATEWAY_FILE` | _(unset)_ | Path to a file holding the username → gateway map, one `user gateway` (or `user=gateway`) per line, with `#` comments — an alternative to a large `VPN_USER_GATEWAY`. Merged with the env var (file wins on conflict). Reload it live with `vpngw-reload`. See [Gateway Mode#hot-reloading-the-user-map](Gateway-Mode#hot-reloading-the-user-map). |
+| `VPN_USER_GATEWAY_WATCH` | `0` | When `1`, a watcher service re-runs `vpngw-reload` automatically whenever the file at `VPN_USER_GATEWAY_FILE` changes. |
 | `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules; must be numerically lower (= stronger) than `VPN_GATEWAY_RULE_PRIO`. |
 
 > **About `PUID`/`PGID`:** this image does **not** implement LinuxServer-style `PUID`/`PGID` user remapping. Setting them has no effect; ocserv drops privileges internally via the `run-as-user`/`run-as-group` directives in `ocserv.conf`.
