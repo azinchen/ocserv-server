@@ -23,7 +23,6 @@ vpn_gateway_rule_prio="${VPN_GATEWAY_RULE_PRIO:-1000}"
 vpn_gateways="${VPN_GATEWAYS:-}"
 vpn_gateways6="${VPN_GATEWAYS6:-}"
 vpn_gateways_file="${VPN_GATEWAYS_FILE:-}"
-vpn_gateways6_file="${VPN_GATEWAYS6_FILE:-}"
 vpn_user_gateway="${VPN_USER_GATEWAY:-}"
 vpn_user_gateway_file="${VPN_USER_GATEWAY_FILE:-}"
 vpn_user_gateway_watch="${VPN_USER_GATEWAY_WATCH:-0}"
@@ -60,9 +59,9 @@ kv_pairs() {
 # Shared by init-vpngw (build gateways + map at boot), the connect/disconnect
 # hook (apply per-session rules) and vpngw-reload (rebuild + reconcile sessions).
 
-# Parse "key value" / "key=value" lines from a file. Blank lines and #-comments
-# ignored; surrounding whitespace trimmed. Emits "key value" per entry. Used for
-# both the gateway definition files and the user-map file.
+# Parse "key value" / "key=value" lines from a file (used for the user map).
+# Blank lines and #-comments ignored; surrounding whitespace trimmed. Emits
+# "key value" per entry.
 kv_file_pairs() {
     [ -f "$1" ] || return 0
     sed 's/#.*//' "$1" | awk '
@@ -79,6 +78,46 @@ kv_merge_env_file() {
     { kv_pairs "$1"; [ -n "$2" ] && kv_file_pairs "$2"; } \
         | awk '$1 != "" { m[$1] = $2 } END { for (k in m) print k, m[k] }' \
         | sort
+}
+
+# Parse the gateway definition file: "name ipv4 [ipv6]" per line (also accepts
+# "name=ipv4"). Blank lines and #-comments ignored; whitespace trimmed. Emits
+# "name ipv4 ipv6" (the IPv6 field empty when the line omits it).
+vpngw_gw_file_lines() {
+    [ -f "$1" ] || return 0
+    sed 's/#.*//' "$1" | awk '
+        { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "") }
+        $0 == "" { next }
+        { gsub(/=/, " "); if ($1 != "" && $2 != "") print $1, $2, $3 }'
+}
+
+# Merge the named-gateway definitions from VPN_GATEWAYS (env, name=ipv4),
+# VPN_GATEWAYS6 (env, name=ipv6) and VPN_GATEWAYS_FILE (file, "name ipv4 [ipv6]")
+# into sorted "name ipv4 ipv6|-" lines, one per gateway. Merge is per field with
+# the file winning: a gateway's IPv4 comes from the file if listed there, else
+# from VPN_GATEWAYS; its IPv6 comes from the file's 3rd column if present, else
+# from VPN_GATEWAYS6, else "-" (none). Gateways with no IPv4 are dropped.
+#   $1 = VPN_GATEWAYS   $2 = VPN_GATEWAYS6   $3 = VPN_GATEWAYS_FILE (optional)
+vpngw_gateways_merged() {
+    {
+        kv_pairs "$1" | awk '{ print "e4", $1, $2 }'
+        kv_pairs "$2" | awk '{ print "e6", $1, $2 }'
+        [ -n "$3" ] && vpngw_gw_file_lines "$3" | awk '{ print "f", $1, $2, $3 }'
+    } | awk '
+        $1 == "e4" { v4e[$2] = $3 }
+        $1 == "e6" { v6e[$2] = $3 }
+        $1 == "f"  { f4[$2] = $3; if ($4 != "") f6[$2] = $4 }
+        END {
+            for (n in v4e) names[n] = 1
+            for (n in v6e) names[n] = 1
+            for (n in f4)  names[n] = 1
+            for (n in names) {
+                ip4 = (n in f4 ? f4[n] : (n in v4e ? v4e[n] : ""))
+                ip6 = (n in f6 ? f6[n] : (n in v6e ? v6e[n] : "-"))
+                if (ip4 == "") continue
+                print n, ip4, ip6
+            }
+        }' | sort
 }
 
 # Rebuild $vpngw_state_dir/users from VPN_USER_GATEWAY (env) plus
