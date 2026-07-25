@@ -40,7 +40,7 @@ restore_config() {
 
 rm -rf "$vpngw_state_dir"
 
-if [ -z "$vpn_gateway" ] && [ -z "$vpn_gateways" ]; then
+if [ -z "$vpn_gateway" ] && [ -z "$vpn_gateways" ] && [ -z "$vpn_gateways_file" ]; then
     restore_config
     log "[INIT-VPNGW] VPN_GATEWAY/VPN_GATEWAYS not set; clients exit via the default route"
     exit 0
@@ -62,10 +62,15 @@ else
 fi
 
 # ---- Named gateways (per-user routing tables) ------------------------------
-if [ -n "$vpn_gateways" ]; then
-    kv_pairs "$vpn_gateways" > "$vpngw_state_dir/gateways.tmp"
+# Definitions come from VPN_GATEWAYS (env) and/or VPN_GATEWAYS_FILE (one
+# "name ip" per line); the file wins on a duplicate name. IPv6 addresses come
+# from VPN_GATEWAYS6 / VPN_GATEWAYS6_FILE the same way.
+if [ -n "$vpn_gateways" ] || [ -n "$vpn_gateways_file" ]; then
+    kv_merge_env_file "$vpn_gateways" "$vpn_gateways_file" > "$vpngw_state_dir/gateways.tmp"
+    kv_merge_env_file "$vpn_gateways6" "$vpn_gateways6_file" > "$vpngw_state_dir/gateways6.tmp"
     idx=0
     while read -r name gw4; do
+        [ -n "$name" ] || continue
         case "$name" in
             direct)
                 log_error "[INIT-VPNGW] VPN_GATEWAYS: 'direct' is a reserved gateway name"
@@ -78,7 +83,7 @@ if [ -n "$vpn_gateways" ]; then
         esac
         idx=$((idx + 1))
         gw_table=$((vpn_gateway_table + idx))
-        gw6="$(kv_get "$vpn_gateways6" "$name")"
+        gw6="$(awk -v n="$name" '$1 == n { print $2; exit }' "$vpngw_state_dir/gateways6.tmp")"
         log "[INIT-VPNGW] Gateway '$name': table $gw_table via $gw4${gw6:+ / $gw6}"
         ip route replace default via "$gw4" table "$gw_table"
         if [ -n "$gw6" ]; then
@@ -87,7 +92,7 @@ if [ -n "$vpn_gateways" ]; then
         fi
         printf '%s %s %s %s\n' "$name" "$gw_table" "$gw4" "${gw6:--}" >> "$vpngw_state_dir/gateways"
     done < "$vpngw_state_dir/gateways.tmp"
-    rm -f "$vpngw_state_dir/gateways.tmp"
+    rm -f "$vpngw_state_dir/gateways.tmp" "$vpngw_state_dir/gateways6.tmp"
 fi
 
 # ---- Per-user map (VPN_USER_GATEWAY and/or VPN_USER_GATEWAY_FILE) -----------

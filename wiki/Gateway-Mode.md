@@ -21,6 +21,8 @@ Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
 | `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
 | `VPN_GATEWAYS` | _(unset)_ | Named gateways for [per-user routing](#per-user-gateways), e.g. `nl=172.28.0.2,us=172.28.0.4`. |
 | `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. |
+| `VPN_GATEWAYS_FILE` | _(unset)_ | File defining named gateways (`name ip` per line), merged with `VPN_GATEWAYS`. Startup only. See [Defining gateways in a file](#defining-gateways-in-a-file). |
+| `VPN_GATEWAYS6_FILE` | _(unset)_ | File defining per-gateway IPv6 addresses (`name ip6` per line), merged with `VPN_GATEWAYS6`. |
 | `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. |
 | `VPN_USER_GATEWAY_FILE` | _(unset)_ | File holding the username → gateway map (one per line), reloadable at runtime. See [Hot-reloading the user map](#hot-reloading-the-user-map). |
 | `VPN_USER_GATEWAY_WATCH` | `0` | `1` = auto-`vpngw-reload` when the map file changes. |
@@ -113,6 +115,25 @@ Each named gateway gets its own next-hop guard in the `inet ocserv_gw` nft table
 - **IPv6:** give a gateway an IPv6 address in `VPN_GATEWAYS6` and its users' IPv6 is policy-routed the same way. A gateway without one has its users' forwarded IPv6 **dropped**, so it can't bypass the IPv4 rule.
 - **Validation:** referencing an undefined gateway name fails loudly — at container startup for `VPN_USER_GATEWAY`, or at reload time for `VPN_USER_GATEWAY_FILE` (the reload aborts and live sessions are left unchanged).
 - Usernames containing `,` or `=` can't be expressed in the inline `VPN_USER_GATEWAY`; use `VPN_USER_GATEWAY_FILE` (space-separated) if a name contains `=`.
+
+## Defining gateways in a file
+
+Like the user map, a long list of named gateways can live in a file instead of inline in `VPN_GATEWAYS`. Point **`VPN_GATEWAYS_FILE`** at a file with one `name ip` (or `name=ip`) per line, and **`VPN_GATEWAYS6_FILE`** at the matching IPv6 addresses:
+
+```
+# /etc/ocserv/gateways.map
+nl   172.28.0.2
+us   172.28.0.4
+de   172.28.0.9
+```
+```
+# /etc/ocserv/gateways6.map
+nl   fd00:nl::2
+```
+
+Each file is merged with its env var (`VPN_GATEWAYS` / `VPN_GATEWAYS6`); on a duplicate name the **file wins**. `#` comments and blank lines are ignored.
+
+> **Startup only.** Gateway definitions are read once at container start — adding, removing, or re-pointing a gateway requires a restart. (Only the *user → gateway* map reloads live; see below.) A gateway creates a routing table and kill-switch chain, which are built at boot; changing that set safely at runtime is intentionally out of scope. The user map may reference any gateway defined here.
 
 ## Hot-reloading the user map
 

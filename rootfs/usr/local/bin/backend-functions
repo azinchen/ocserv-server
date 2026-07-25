@@ -22,6 +22,8 @@ vpn_gateway_table="${VPN_GATEWAY_TABLE:-100}"
 vpn_gateway_rule_prio="${VPN_GATEWAY_RULE_PRIO:-1000}"
 vpn_gateways="${VPN_GATEWAYS:-}"
 vpn_gateways6="${VPN_GATEWAYS6:-}"
+vpn_gateways_file="${VPN_GATEWAYS_FILE:-}"
+vpn_gateways6_file="${VPN_GATEWAYS6_FILE:-}"
 vpn_user_gateway="${VPN_USER_GATEWAY:-}"
 vpn_user_gateway_file="${VPN_USER_GATEWAY_FILE:-}"
 vpn_user_gateway_watch="${VPN_USER_GATEWAY_WATCH:-0}"
@@ -54,23 +56,29 @@ kv_pairs() {
         awk -F= '{ gsub(/[[:space:]]/, "") } $1 != "" && $2 != "" { print $1 " " $2 }'
 }
 
-# Print the value for a key in a "key=value,key=value" list (empty if absent)
-kv_get() {
-    kv_pairs "${1:-}" | awk -v k="$2" '$1 == k { print $2; exit }'
-}
+# ---- Gateway / user-map config helpers -------------------------------------
+# Shared by init-vpngw (build gateways + map at boot), the connect/disconnect
+# hook (apply per-session rules) and vpngw-reload (rebuild + reconcile sessions).
 
-# ---- Per-user gateway map: shared helpers ----------------------------------
-# Used by init-vpngw (build the map at boot), the connect/disconnect hook
-# (apply per-session rules) and vpngw-reload (rebuild + reconcile live sessions).
-
-# Emit "user gateway" lines from a mapping file. One "user gw" or "user=gw" per
-# line; blank lines and #-comments ignored; surrounding whitespace trimmed.
-vpngw_user_file_pairs() {
+# Parse "key value" / "key=value" lines from a file. Blank lines and #-comments
+# ignored; surrounding whitespace trimmed. Emits "key value" per entry. Used for
+# both the gateway definition files and the user-map file.
+kv_file_pairs() {
     [ -f "$1" ] || return 0
     sed 's/#.*//' "$1" | awk '
         { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "") }
         $0 == "" { next }
         { gsub(/=/, " "); if ($1 != "" && $2 != "") print $1 " " $2 }'
+}
+
+# Merge an env "k=v,k=v" list ($1) with a "k v"/"k=v" file ($2, optional) and
+# emit sorted "k value" lines, one per key. On a duplicate key the file wins
+# (env entries are listed first, so the file's value overwrites). Sorting makes
+# the result deterministic (e.g. stable gateway->table assignment within a boot).
+kv_merge_env_file() {
+    { kv_pairs "$1"; [ -n "$2" ] && kv_file_pairs "$2"; } \
+        | awk '$1 != "" { m[$1] = $2 } END { for (k in m) print k, m[k] }' \
+        | sort
 }
 
 # Rebuild $vpngw_state_dir/users from VPN_USER_GATEWAY (env) plus
@@ -80,16 +88,8 @@ vpngw_user_file_pairs() {
 # the function returns 1. An empty map produces an empty users file (so the hook
 # stays active and later additions can be applied at runtime).
 vpngw_build_users() {
-    _merged="$vpngw_state_dir/users.merged.$$"
     _tmp="$vpngw_state_dir/users.new.$$"
-    : > "$_merged"
-    kv_pairs "$vpn_user_gateway" >> "$_merged"
-    if [ -n "$vpn_user_gateway_file" ]; then
-        vpngw_user_file_pairs "$vpn_user_gateway_file" >> "$_merged"
-    fi
-    # Last occurrence wins: env entries first, file entries second => file wins.
-    awk '$1 != "" { m[$1] = $2 } END { for (u in m) print u, m[u] }' "$_merged" > "$_tmp"
-    rm -f "$_merged"
+    kv_merge_env_file "$vpn_user_gateway" "$vpn_user_gateway_file" > "$_tmp"
 
     _bad=0
     while read -r _u _gw; do
