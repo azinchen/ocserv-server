@@ -131,7 +131,7 @@ The file is merged with `VPN_GATEWAYS` / `VPN_GATEWAYS6` **per field**, the file
 
 ### Blocking a family per gateway
 
-Either address column may be the reserved value **`block`** (or `drop`) instead of an IP — that family is then **dropped** for the gateway's users (fail-closed, like a leak-proof kill switch for that protocol):
+Either address column may be the reserved keyword **`block`** instead of an IP — that family is then **blocked** for the gateway's users, so it can't leak out anywhere:
 
 ```
 # name       ipv4          ipv6
@@ -139,10 +139,12 @@ nordvpn      172.28.0.33   block          # IPv4 via nordvpn, IPv6 blocked
 lan6         block         2001:db8::9    # IPv6-only gateway: IPv4 blocked
 ```
 
-- **`name ipv4 block`** — the gateway routes IPv4 but its users' IPv6 is dropped. This is the explicit form of what a gateway with no IPv6 already does, and it overrides any address `VPN_GATEWAYS6` would otherwise supply.
-- **`name block ipv6`** — an **IPv6-only gateway**: users' IPv4 is dropped and only IPv6 is routed.
+- **`name ipv4 block`** — the gateway routes IPv4 but its users' IPv6 is blocked. This is the explicit form of what a gateway with no IPv6 already does, and it overrides any address `VPN_GATEWAYS6` would otherwise supply.
+- **`name block ipv6`** — an **IPv6-only gateway**: users' IPv4 is blocked and only IPv6 is routed.
 
-A gateway must route at least one family — `block block` is rejected — and IPv4 must always be stated explicitly (an IP or `block`), so you never lose IPv4 by omission. `block`, `drop` and `direct` are reserved and can't be used as gateway names.
+**What "blocked" does:** the blocked family's forwarded packets are **rejected** with an ICMP/ICMPv6 *administratively-prohibited* message, so the client's connection in that family fails **immediately** and a dual-stack app falls back to the other family (rather than hanging on a silent black-hole). The reject is generated locally for the client — nothing egresses, so there's **no leak**. (This differs on purpose from the internal next-hop *failsafe* guards, which drop silently: a block is a deliberate "this protocol is off", a failsafe is an unexpected leak.)
+
+A gateway must route at least one family — `block block` is rejected — and IPv4 must always be stated explicitly (an IP or `block`), so you never lose IPv4 by omission. `block` and `direct` are reserved and can't be used as gateway names. (`drop` is accepted as a synonym for `block`.)
 
 > **Startup only.** Gateway definitions are read once at container start — adding, removing, or re-pointing a gateway requires a restart. (Only the *user → gateway* map reloads live; see below.) A gateway creates a routing table and kill-switch chain, which are built at boot; changing that set safely at runtime is intentionally out of scope. The user map may reference any gateway defined here.
 
