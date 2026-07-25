@@ -93,10 +93,14 @@ vpngw_gw_file_lines() {
 
 # Merge the named-gateway definitions from VPN_GATEWAYS (env, name=ipv4),
 # VPN_GATEWAYS6 (env, name=ipv6) and VPN_GATEWAYS_FILE (file, "name ipv4 [ipv6]")
-# into sorted "name ipv4 ipv6|-" lines, one per gateway. Merge is per field with
+# into sorted "name ipv4 ipv6" lines, one per gateway. Merge is per field with
 # the file winning: a gateway's IPv4 comes from the file if listed there, else
-# from VPN_GATEWAYS; its IPv6 comes from the file's 3rd column if present, else
-# from VPN_GATEWAYS6, else "-" (none). Gateways with no IPv4 are dropped.
+# from VPN_GATEWAYS; its IPv6 from the file's 3rd column if present, else from
+# VPN_GATEWAYS6. Each address is an IP, or "drop" (from the reserved values
+# "block"/"drop" - that family is blocked for the gateway's users). An IPv4 that
+# is never specified is emitted as "none" (invalid; the caller errors); an IPv6
+# that is never specified defaults to "drop" (its users' IPv6 is dropped, the
+# long-standing behaviour for a v6-less gateway).
 #   $1 = VPN_GATEWAYS   $2 = VPN_GATEWAYS6   $3 = VPN_GATEWAYS_FILE (optional)
 vpngw_gateways_merged() {
     {
@@ -104,17 +108,17 @@ vpngw_gateways_merged() {
         kv_pairs "$2" | awk '{ print "e6", $1, $2 }'
         [ -n "$3" ] && vpngw_gw_file_lines "$3" | awk '{ print "f", $1, $2, $3 }'
     } | awk '
-        $1 == "e4" { v4e[$2] = $3 }
-        $1 == "e6" { v6e[$2] = $3 }
-        $1 == "f"  { f4[$2] = $3; if ($4 != "") f6[$2] = $4 }
+        function norm(x) { return (x == "block" || x == "drop") ? "drop" : x }
+        $1 == "e4" { v4e[$2] = norm($3) }
+        $1 == "e6" { v6e[$2] = norm($3) }
+        $1 == "f"  { f4[$2] = norm($3); if ($4 != "") f6[$2] = norm($4) }
         END {
             for (n in v4e) names[n] = 1
             for (n in v6e) names[n] = 1
             for (n in f4)  names[n] = 1
             for (n in names) {
-                ip4 = (n in f4 ? f4[n] : (n in v4e ? v4e[n] : ""))
-                ip6 = (n in f6 ? f6[n] : (n in v6e ? v6e[n] : "-"))
-                if (ip4 == "") continue
+                ip4 = (n in f4 ? f4[n] : (n in v4e ? v4e[n] : "none"))
+                ip6 = (n in f6 ? f6[n] : (n in v6e ? v6e[n] : "drop"))
                 print n, ip4, ip6
             }
         }' | sort
@@ -162,6 +166,7 @@ vpngw_cleanup_session() {
             _n=$((_n + 1))
         done
         nft delete element inet ocserv_gw direct_v4 "{ $_ip4 }" 2>/dev/null || true
+        nft delete element inet ocserv_gw v4_drop "{ $_ip4 }" 2>/dev/null || true
     fi
     if [ -n "$_ip6" ]; then
         _n=0
@@ -171,11 +176,13 @@ vpngw_cleanup_session() {
         nft delete element inet ocserv_gw direct_v6 "{ $_ip6 }" 2>/dev/null || true
         nft delete element inet ocserv_gw v6_drop "{ $_ip6 }" 2>/dev/null || true
     fi
+    # Remove the address from every gateway's set (harmless if it was never a
+    # member, e.g. a family the gateway blocks has no gw_<name>_vN set).
     if [ -f "$vpngw_state_dir/gateways" ]; then
-        while read -r _name _ _ _gw6; do
+        while read -r _name _ _ _; do
             [ -n "$_ip4" ] \
                 && { nft delete element inet ocserv_gw "gw_${_name}_v4" "{ $_ip4 }" 2>/dev/null || true; }
-            [ "$_gw6" != "-" ] && [ -n "$_ip6" ] \
+            [ -n "$_ip6" ] \
                 && { nft delete element inet ocserv_gw "gw_${_name}_v6" "{ $_ip6 }" 2>/dev/null || true; }
         done < "$vpngw_state_dir/gateways"
     fi
@@ -212,20 +219,26 @@ vpngw_apply_session() {
     _line="$(awk -v n="$_gw" '$1 == n { print; exit }' "$vpngw_state_dir/gateways" 2>/dev/null)"
     [ -n "$_line" ] || { log_error "[VPNGW] gateway '$_gw' not found in state"; return 1; }
     _table="$(echo "$_line" | awk '{ print $2 }')"
+    _gw4="$(echo "$_line" | awk '{ print $3 }')"
     _gw6="$(echo "$_line" | awk '{ print $4 }')"
 
-    ip rule add from "$_ip4" lookup "$_table" priority "$_prio" || return 1
-    nft add element inet ocserv_gw "gw_${_gw}_v4" "{ $_ip4 }" || return 1
+    # IPv4: route via the gateway table, or (blocked) drop at the forward hook.
+    if [ "$_gw4" != "drop" ]; then
+        ip rule add from "$_ip4" lookup "$_table" priority "$_prio" || return 1
+        nft add element inet ocserv_gw "gw_${_gw}_v4" "{ $_ip4 }" || return 1
+    else
+        nft add element inet ocserv_gw v4_drop "{ $_ip4 }" || return 1
+    fi
+    # IPv6: same, when the session has an address. "drop" covers both an
+    # explicitly blocked gateway and a gateway with no IPv6 at all.
     if [ -n "$_ip6" ]; then
-        if [ "$_gw6" != "-" ]; then
+        if [ "$_gw6" != "drop" ]; then
             ip -6 rule add from "$_ip6" lookup "$_table" priority "$_prio" || return 1
             nft add element inet ocserv_gw "gw_${_gw}_v6" "{ $_ip6 }" || return 1
         else
-            # Gateway has no IPv6: drop this session's forwarded IPv6 so it
-            # cannot bypass the IPv4-only policy rule.
             nft add element inet ocserv_gw v6_drop "{ $_ip6 }" || return 1
         fi
     fi
-    log "[VPNGW] User '$_u' ($_ip4${_ip6:+, $_ip6}) routed via gateway '$_gw' (table $_table)"
+    log "[VPNGW] User '$_u' ($_ip4${_ip6:+, $_ip6}) routed via gateway '$_gw' (table $_table; v4=$_gw4 v6=$_gw6)"
     return 0
 }

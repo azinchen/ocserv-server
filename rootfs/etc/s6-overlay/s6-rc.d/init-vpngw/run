@@ -71,8 +71,8 @@ if [ -n "$vpn_gateways" ] || [ -n "$vpn_gateways_file" ]; then
     while read -r name gw4 gw6; do
         [ -n "$name" ] || continue
         case "$name" in
-            direct)
-                log_error "[INIT-VPNGW] VPN_GATEWAYS: 'direct' is a reserved gateway name"
+            direct|block|drop)
+                log_error "[INIT-VPNGW] VPN_GATEWAYS: '$name' is a reserved gateway name"
                 exit 1
                 ;;
             *[!a-zA-Z0-9_]*)
@@ -80,16 +80,29 @@ if [ -n "$vpn_gateways" ] || [ -n "$vpn_gateways_file" ]; then
                 exit 1
                 ;;
         esac
-        [ "$gw6" = "-" ] && gw6=""
+        # gw4/gw6 are each an IP or "drop" (block that family); gw4 "none" means
+        # no IPv4 was given at all. A gateway must route at least one family.
+        if [ "$gw4" = "none" ]; then
+            log_error "[INIT-VPNGW] Gateway '$name' has no IPv4 address; use 'block' for an IPv6-only gateway"
+            exit 1
+        fi
+        if [ "$gw4" = "drop" ] && [ "$gw6" = "drop" ]; then
+            log_error "[INIT-VPNGW] Gateway '$name' blocks both IPv4 and IPv6; it would route nothing"
+            exit 1
+        fi
         idx=$((idx + 1))
         gw_table=$((vpn_gateway_table + idx))
-        log "[INIT-VPNGW] Gateway '$name': table $gw_table via $gw4${gw6:+ / $gw6}"
-        ip route replace default via "$gw4" table "$gw_table"
-        if [ -n "$gw6" ]; then
+        _v4desc="$gw4"; [ "$gw4" = "drop" ] && _v4desc="blocked"
+        _v6desc="$gw6"; [ "$gw6" = "drop" ] && _v6desc="blocked"
+        log "[INIT-VPNGW] Gateway '$name': table $gw_table (v4 $_v4desc / v6 $_v6desc)"
+        if [ "$gw4" != "drop" ]; then
+            ip route replace default via "$gw4" table "$gw_table"
+        fi
+        if [ "$gw6" != "drop" ]; then
             ip -6 route replace default via "$gw6" table "$gw_table" \
                 || log_error "[INIT-VPNGW] Warning: could not add IPv6 route for gateway '$name'"
         fi
-        printf '%s %s %s %s\n' "$name" "$gw_table" "$gw4" "${gw6:--}" >> "$vpngw_state_dir/gateways"
+        printf '%s %s %s %s\n' "$name" "$gw_table" "$gw4" "$gw6" >> "$vpngw_state_dir/gateways"
     done < "$vpngw_state_dir/gateways.tmp"
     rm -f "$vpngw_state_dir/gateways.tmp"
 fi
@@ -135,9 +148,12 @@ fi
 #     connect hook); traffic from those addresses may exit the WAN ONLY toward
 #     that gateway's next-hop and never falls through to the default guard.
 #   * "direct" users: an accept set so they bypass the default guard.
-#   * v6_drop: forwarded IPv6 from users whose gateway has no IPv6 is dropped
-#     outright (otherwise it would bypass the v4-only policy rule).
+#   * v4_drop / v6_drop: forwarded traffic of a family a user's gateway blocks
+#     (or, for IPv6, a gateway that simply has none) is dropped outright, so it
+#     can't fall through to the subnet guard or the default route.
 #   * Default gateway (IPv4/IPv6): same next-hop guard for the whole subnet.
+# A gateway that blocks a family has no gw_<name>_v{4,6} set (its users go to
+# v{4,6}_drop instead); only routed families get a next-hop guard.
 case "$vpn_if" in
     *+) vpn_ifname="${vpn_if%+}*" ;;
     *)  vpn_ifname="$vpn_if" ;;
@@ -147,12 +163,14 @@ nft_sets=""
 user_rules=""
 if [ -f "$vpngw_state_dir/gateways" ]; then
     while read -r name gw_table gw4 gw6; do
-        nft_sets="$nft_sets
+        if [ "$gw4" != "drop" ]; then
+            nft_sets="$nft_sets
     set gw_${name}_v4 { type ipv4_addr; }"
-        user_rules="$user_rules
+            user_rules="$user_rules
         ip saddr @gw_${name}_v4 oifname \"$wan_if\" rt ip nexthop != $gw4 drop
         ip saddr @gw_${name}_v4 oifname \"$wan_if\" accept"
-        if [ "$gw6" != "-" ]; then
+        fi
+        if [ "$gw6" != "drop" ]; then
             nft_sets="$nft_sets
     set gw_${name}_v6 { type ipv6_addr; }"
             user_rules="$user_rules
@@ -165,10 +183,12 @@ if [ -f "$vpngw_state_dir/users" ]; then
     nft_sets="$nft_sets
     set direct_v4 { type ipv4_addr; }
     set direct_v6 { type ipv6_addr; }
+    set v4_drop { type ipv4_addr; }
     set v6_drop { type ipv6_addr; }"
     user_rules="$user_rules
         ip saddr @direct_v4 oifname \"$wan_if\" accept
         ip6 saddr @direct_v6 oifname \"$wan_if\" accept
+        ip saddr @v4_drop drop
         ip6 saddr @v6_drop drop"
 fi
 

@@ -127,7 +127,22 @@ us       172.28.0.4
 de       172.28.0.9    fd00:de::2
 ```
 
-The file is merged with `VPN_GATEWAYS` / `VPN_GATEWAYS6` **per field**, the file winning: a gateway's IPv4 comes from the file if listed there (else `VPN_GATEWAYS`), and its IPv6 from the file's 3rd column if present (else `VPN_GATEWAYS6`, else none). `#` comments and blank lines are ignored.
+The file is merged with `VPN_GATEWAYS` / `VPN_GATEWAYS6` **per field**, the file winning: a gateway's IPv4 comes from the file if listed there (else `VPN_GATEWAYS`), and its IPv6 from the file's 3rd column if present (else `VPN_GATEWAYS6`, else dropped). `#` comments and blank lines are ignored.
+
+### Blocking a family per gateway
+
+Either address column may be the reserved value **`block`** (or `drop`) instead of an IP — that family is then **dropped** for the gateway's users (fail-closed, like a leak-proof kill switch for that protocol):
+
+```
+# name       ipv4          ipv6
+nordvpn      172.28.0.33   block          # IPv4 via nordvpn, IPv6 blocked
+lan6         block         2001:db8::9    # IPv6-only gateway: IPv4 blocked
+```
+
+- **`name ipv4 block`** — the gateway routes IPv4 but its users' IPv6 is dropped. This is the explicit form of what a gateway with no IPv6 already does, and it overrides any address `VPN_GATEWAYS6` would otherwise supply.
+- **`name block ipv6`** — an **IPv6-only gateway**: users' IPv4 is dropped and only IPv6 is routed.
+
+A gateway must route at least one family — `block block` is rejected — and IPv4 must always be stated explicitly (an IP or `block`), so you never lose IPv4 by omission. `block`, `drop` and `direct` are reserved and can't be used as gateway names.
 
 > **Startup only.** Gateway definitions are read once at container start — adding, removing, or re-pointing a gateway requires a restart. (Only the *user → gateway* map reloads live; see below.) A gateway creates a routing table and kill-switch chain, which are built at boot; changing that set safely at runtime is intentionally out of scope. The user map may reference any gateway defined here.
 
