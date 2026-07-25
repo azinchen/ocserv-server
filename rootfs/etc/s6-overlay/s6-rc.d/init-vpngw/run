@@ -40,7 +40,7 @@ restore_config() {
 
 rm -rf "$vpngw_state_dir"
 
-if [ -z "$vpn_gateway" ] && [ -z "$vpn_gateways" ]; then
+if [ -z "$vpn_gateway" ] && [ -z "$vpn_gateways" ] && [ -z "$vpn_gateways_file" ]; then
     restore_config
     log "[INIT-VPNGW] VPN_GATEWAY/VPN_GATEWAYS not set; clients exit via the default route"
     exit 0
@@ -51,14 +51,28 @@ mkdir -p "$vpngw_state_dir"
 table="$vpn_gateway_table"
 prio="$vpn_gateway_rule_prio"
 
+# Per-user mode is active when a static map (VPN_USER_GATEWAY) and/or a map file
+# (VPN_USER_GATEWAY_FILE) is configured. With a file configured the hook is
+# installed even when the map is currently empty, so mappings can be added at
+# runtime and applied with vpngw-reload (no container restart).
+if [ -n "$vpn_user_gateway" ] || [ -n "$vpn_user_gateway_file" ]; then
+    vpngw_user_mode=1
+else
+    vpngw_user_mode=0
+fi
+
 # ---- Named gateways (per-user routing tables) ------------------------------
-if [ -n "$vpn_gateways" ]; then
-    kv_pairs "$vpn_gateways" > "$vpngw_state_dir/gateways.tmp"
+# Definitions come from VPN_GATEWAYS / VPN_GATEWAYS6 (env) and/or
+# VPN_GATEWAYS_FILE (one "name ipv4 [ipv6]" per line); the file wins per field.
+if [ -n "$vpn_gateways" ] || [ -n "$vpn_gateways_file" ]; then
+    vpngw_gateways_merged "$vpn_gateways" "$vpn_gateways6" "$vpn_gateways_file" \
+        > "$vpngw_state_dir/gateways.tmp"
     idx=0
-    while read -r name gw4; do
+    while read -r name gw4 gw6; do
+        [ -n "$name" ] || continue
         case "$name" in
-            direct)
-                log_error "[INIT-VPNGW] VPN_GATEWAYS: 'direct' is a reserved gateway name"
+            direct|block|drop)
+                log_error "[INIT-VPNGW] VPN_GATEWAYS: '$name' is a reserved gateway name"
                 exit 1
                 ;;
             *[!a-zA-Z0-9_]*)
@@ -66,34 +80,44 @@ if [ -n "$vpn_gateways" ]; then
                 exit 1
                 ;;
         esac
+        # gw4/gw6 are each an IP or "block" (block that family); gw4 "none" means
+        # no IPv4 was given at all. A gateway must route at least one family.
+        if [ "$gw4" = "none" ]; then
+            log_error "[INIT-VPNGW] Gateway '$name' has no IPv4 address; use 'block' for an IPv6-only gateway"
+            exit 1
+        fi
+        if [ "$gw4" = "block" ] && [ "$gw6" = "block" ]; then
+            log_error "[INIT-VPNGW] Gateway '$name' blocks both IPv4 and IPv6; it would route nothing"
+            exit 1
+        fi
         idx=$((idx + 1))
         gw_table=$((vpn_gateway_table + idx))
-        gw6="$(kv_get "$vpn_gateways6" "$name")"
-        log "[INIT-VPNGW] Gateway '$name': table $gw_table via $gw4${gw6:+ / $gw6}"
-        ip route replace default via "$gw4" table "$gw_table"
-        if [ -n "$gw6" ]; then
+        log "[INIT-VPNGW] Gateway '$name': table $gw_table (v4 $gw4 / v6 $gw6)"
+        if [ "$gw4" != "block" ]; then
+            ip route replace default via "$gw4" table "$gw_table"
+        fi
+        if [ "$gw6" != "block" ]; then
             ip -6 route replace default via "$gw6" table "$gw_table" \
                 || log_error "[INIT-VPNGW] Warning: could not add IPv6 route for gateway '$name'"
         fi
-        printf '%s %s %s %s\n' "$name" "$gw_table" "$gw4" "${gw6:--}" >> "$vpngw_state_dir/gateways"
+        printf '%s %s %s %s\n' "$name" "$gw_table" "$gw4" "$gw6" >> "$vpngw_state_dir/gateways"
     done < "$vpngw_state_dir/gateways.tmp"
     rm -f "$vpngw_state_dir/gateways.tmp"
 fi
 
-# ---- Per-user map validation ----------------------------------------------
-if [ -n "$vpn_user_gateway" ]; then
-    kv_pairs "$vpn_user_gateway" > "$vpngw_state_dir/users.tmp"
+# ---- Per-user map (VPN_USER_GATEWAY and/or VPN_USER_GATEWAY_FILE) -----------
+if [ "$vpngw_user_mode" = 1 ]; then
+    mkdir -p "$vpngw_state_dir/sessions"
+    if ! vpngw_build_users; then
+        log_error "[INIT-VPNGW] Invalid user-gateway map; aborting"
+        exit 1
+    fi
     while read -r user gwname; do
-        if [ "$gwname" != "direct" ] \
-            && ! awk -v n="$gwname" '$1 == n { found = 1 } END { exit !found }' \
-                "$vpngw_state_dir/gateways" 2>/dev/null; then
-            log_error "[INIT-VPNGW] VPN_USER_GATEWAY: unknown gateway '$gwname' for user '$user' (define it in VPN_GATEWAYS)"
-            exit 1
-        fi
-        log "[INIT-VPNGW] User '$user' routes via gateway '$gwname'"
-        printf '%s %s\n' "$user" "$gwname" >> "$vpngw_state_dir/users"
-    done < "$vpngw_state_dir/users.tmp"
-    rm -f "$vpngw_state_dir/users.tmp"
+        [ -n "$user" ] && log "[INIT-VPNGW] User '$user' routes via gateway '$gwname'"
+    done < "$vpngw_state_dir/users"
+    if [ -n "$vpn_user_gateway_file" ]; then
+        log "[INIT-VPNGW] User-gateway map file: $vpn_user_gateway_file (reload with vpngw-reload)"
+    fi
 fi
 
 # ---- Default gateway: IPv4 routing -----------------------------------------
@@ -122,9 +146,15 @@ fi
 #     connect hook); traffic from those addresses may exit the WAN ONLY toward
 #     that gateway's next-hop and never falls through to the default guard.
 #   * "direct" users: an accept set so they bypass the default guard.
-#   * v6_drop: forwarded IPv6 from users whose gateway has no IPv6 is dropped
-#     outright (otherwise it would bypass the v4-only policy rule).
+#   * v4_block / v6_block: forwarded traffic of a family a user's gateway blocks
+#     (or, for IPv6, a gateway that simply has none) is rejected with an ICMP
+#     admin-prohibited, so the client fails fast (and falls back to the other
+#     family) instead of hanging - and it can't fall through to the subnet guard
+#     or the default route. Reject (not drop) because a block is intentional;
+#     the next-hop guards below stay drop as a silent failsafe against leaks.
 #   * Default gateway (IPv4/IPv6): same next-hop guard for the whole subnet.
+# A gateway that blocks a family has no gw_<name>_v{4,6} set (its users go to
+# v{4,6}_block instead); only routed families get a next-hop guard.
 case "$vpn_if" in
     *+) vpn_ifname="${vpn_if%+}*" ;;
     *)  vpn_ifname="$vpn_if" ;;
@@ -134,12 +164,14 @@ nft_sets=""
 user_rules=""
 if [ -f "$vpngw_state_dir/gateways" ]; then
     while read -r name gw_table gw4 gw6; do
-        nft_sets="$nft_sets
+        if [ "$gw4" != "block" ]; then
+            nft_sets="$nft_sets
     set gw_${name}_v4 { type ipv4_addr; }"
-        user_rules="$user_rules
+            user_rules="$user_rules
         ip saddr @gw_${name}_v4 oifname \"$wan_if\" rt ip nexthop != $gw4 drop
         ip saddr @gw_${name}_v4 oifname \"$wan_if\" accept"
-        if [ "$gw6" != "-" ]; then
+        fi
+        if [ "$gw6" != "block" ]; then
             nft_sets="$nft_sets
     set gw_${name}_v6 { type ipv6_addr; }"
             user_rules="$user_rules
@@ -152,11 +184,13 @@ if [ -f "$vpngw_state_dir/users" ]; then
     nft_sets="$nft_sets
     set direct_v4 { type ipv4_addr; }
     set direct_v6 { type ipv6_addr; }
-    set v6_drop { type ipv6_addr; }"
+    set v4_block { type ipv4_addr; }
+    set v6_block { type ipv6_addr; }"
     user_rules="$user_rules
         ip saddr @direct_v4 oifname \"$wan_if\" accept
         ip6 saddr @direct_v6 oifname \"$wan_if\" accept
-        ip6 saddr @v6_drop drop"
+        ip saddr @v4_block reject with icmp type admin-prohibited
+        ip6 saddr @v6_block reject with icmpv6 type admin-prohibited"
 fi
 
 default_rules=""
@@ -167,7 +201,7 @@ if [ -n "$vpn_gateway" ]; then
         ip6 saddr $ipv6_subnet oifname \"$wan_if\" rt ip6 nexthop != $vpn_gateway6 drop"
     else
         default_rules="$default_rules
-        meta nfproto ipv6 iifname \"$vpn_ifname\" drop"
+        meta nfproto ipv6 iifname \"$vpn_ifname\" reject with icmpv6 type admin-prohibited"
     fi
 fi
 

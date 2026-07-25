@@ -21,7 +21,10 @@ Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
 | `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
 | `VPN_GATEWAYS` | _(unset)_ | Named gateways for [per-user routing](#per-user-gateways), e.g. `nl=172.28.0.2,us=172.28.0.4`. |
 | `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. |
+| `VPN_GATEWAYS_FILE` | _(unset)_ | File defining named gateways (`name ipv4 [ipv6]` per line), merged with `VPN_GATEWAYS`/`VPN_GATEWAYS6`. Startup only. See [Defining gateways in a file](#defining-gateways-in-a-file). |
 | `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. |
+| `VPN_USER_GATEWAY_FILE` | _(unset)_ | File holding the username → gateway map (one per line), reloadable at runtime. See [Hot-reloading the user map](#hot-reloading-the-user-map). |
+| `VPN_USER_GATEWAY_WATCH` | `0` | `1` = auto-`vpngw-reload` when the map file changes. |
 | `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (wins over the subnet rule). |
 
 When `VPN_GATEWAY` and `VPN_GATEWAYS` are unset, the `init-vpngw` service is a no-op — ocserv behaves exactly as a standalone server (including normal IPv6).
@@ -109,8 +112,66 @@ Each named gateway gets its own next-hop guard in the `inet ocserv_gw` nft table
 - **Unmapped users** follow `VPN_GATEWAY` if set, otherwise the container's default route — exactly the classic behavior.
 - **`direct`** is a reserved gateway name: a user mapped to it gets a per-session rule pointing at the **main** routing table, so they exit via the container's default route (the ISP) even when `VPN_GATEWAY` steers everyone else. Note there is deliberately no kill switch for a `direct` user — they behave like a standalone ocserv client. `VPN_GATEWAY=direct` is also accepted as an explicit way to say "unmapped users exit via the ISP" (same as leaving it unset).
 - **IPv6:** give a gateway an IPv6 address in `VPN_GATEWAYS6` and its users' IPv6 is policy-routed the same way. A gateway without one has its users' forwarded IPv6 **dropped**, so it can't bypass the IPv4 rule.
-- **Validation:** referencing an undefined gateway name in `VPN_USER_GATEWAY` fails container startup loudly.
-- Usernames containing `,` or `=` can't be expressed in the map.
+- **Validation:** referencing an undefined gateway name fails loudly — at container startup for `VPN_USER_GATEWAY`, or at reload time for `VPN_USER_GATEWAY_FILE` (the reload aborts and live sessions are left unchanged).
+- Usernames containing `,` or `=` can't be expressed in the inline `VPN_USER_GATEWAY`; use `VPN_USER_GATEWAY_FILE` (space-separated) if a name contains `=`.
+
+## Defining gateways in a file
+
+Like the user map, a long list of named gateways can live in a file instead of inline in `VPN_GATEWAYS`. Point **`VPN_GATEWAYS_FILE`** at a file with one gateway per line — `name`, IPv4, and an **optional** IPv6 as the third column, so both families share one file:
+
+```
+# /etc/ocserv/gateways.map
+# name   ipv4          ipv6 (optional)
+nl       172.28.0.2    fd00:nl::2
+us       172.28.0.4
+de       172.28.0.9    fd00:de::2
+```
+
+The file is merged with `VPN_GATEWAYS` / `VPN_GATEWAYS6` **per field**, the file winning: a gateway's IPv4 comes from the file if listed there (else `VPN_GATEWAYS`), and its IPv6 from the file's 3rd column if present (else `VPN_GATEWAYS6`, else dropped). `#` comments and blank lines are ignored.
+
+### Blocking a family per gateway
+
+Either address column may be the reserved keyword **`block`** instead of an IP — that family is then **blocked** for the gateway's users, so it can't leak out anywhere:
+
+```
+# name       ipv4          ipv6
+nordvpn      172.28.0.33   block          # IPv4 via nordvpn, IPv6 blocked
+lan6         block         2001:db8::9    # IPv6-only gateway: IPv4 blocked
+```
+
+- **`name ipv4 block`** — the gateway routes IPv4 but its users' IPv6 is blocked. This is the explicit form of what a gateway with no IPv6 already does, and it overrides any address `VPN_GATEWAYS6` would otherwise supply.
+- **`name block ipv6`** — an **IPv6-only gateway**: users' IPv4 is blocked and only IPv6 is routed.
+
+**What "blocked" does:** the blocked family's forwarded packets are **rejected** with an ICMP/ICMPv6 *administratively-prohibited* message, so the client's connection in that family fails **immediately** and a dual-stack app falls back to the other family (rather than hanging on a silent black-hole). The reject is generated locally for the client — nothing egresses, so there's **no leak**. (This differs on purpose from the internal next-hop *failsafe* guards, which drop silently: a block is a deliberate "this protocol is off", a failsafe is an unexpected leak.)
+
+A gateway must route at least one family — `block block` is rejected — and IPv4 must always be stated explicitly (an IP or `block`), so you never lose IPv4 by omission. `block` and `direct` are reserved and can't be used as gateway names. (`drop` is accepted as a synonym for `block`.)
+
+> **Startup only.** Gateway definitions are read once at container start — adding, removing, or re-pointing a gateway requires a restart. (Only the *user → gateway* map reloads live; see below.) A gateway creates a routing table and kill-switch chain, which are built at boot; changing that set safely at runtime is intentionally out of scope. The user map may reference any gateway defined here.
+
+## Hot-reloading the user map
+
+For a large or frequently-changing map, keeping it inline in `VPN_USER_GATEWAY` (and in your compose file) is awkward. Point **`VPN_USER_GATEWAY_FILE`** at a file instead — one mapping per line, `#` comments and blank lines allowed:
+
+```
+# /etc/ocserv/user-gateway.map   (under the mounted /etc/ocserv volume)
+alice            nl
+bob              us
+roadwarrior-07   direct
+```
+
+`user gateway` and `user=gateway` are both accepted. The file and `VPN_USER_GATEWAY` are merged; on a conflicting username the **file wins**. Put the file under the `/etc/ocserv` volume so you can edit it from the host.
+
+**Apply changes without restarting the container:**
+
+```bash
+docker exec <container> vpngw-reload
+```
+
+`vpngw-reload` rebuilds the map and applies the differences to **already-connected sessions in place** — no tunnel drop. A user whose gateway changed is moved to the new one, a newly-added user is steered immediately, and a removed user falls back to `VPN_GATEWAY`/the default route. The new file is validated in full first: if it names an undefined gateway the reload aborts and live sessions are left exactly as they were.
+
+To apply on every save automatically, set **`VPN_USER_GATEWAY_WATCH=1`** — a small watcher service runs `vpngw-reload` for you whenever the file changes.
+
+> The connect/disconnect hook is installed whenever `VPN_USER_GATEWAY_FILE` is set, even if the file is empty or absent at startup — so you can start with no mappings and add them entirely at runtime. Named gateways themselves (`VPN_GATEWAYS`) are still fixed at startup; the file changes only *which user uses which existing gateway*.
 
 ## Upstream requirements (NordVPN example)
 
