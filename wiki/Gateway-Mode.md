@@ -15,13 +15,14 @@ Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
 
 | Variable | Default | Description |
 |---|---|---|
-| `VPN_GATEWAY` | _(unset)_ | Default IPv4 egress for unmapped users: an **IP** (steer `VPN_SUBNET` to it + kill switch), `direct`/unset (exit via the ISP), or `block` (reject their IPv4). |
-| `VPN_GATEWAY6` | _(unset)_ | Default IPv6 egress for unmapped users: an **IP** (route `IPV6_SUBNET` to it), `direct` (exit via the ISP), or `block`/unset (reject their IPv6). |
+| `VPN_GATEWAY` | _(unset)_ | Default IPv4 egress for unmapped users: an **IP or DNS name** (steer `VPN_SUBNET` to it + kill switch), `direct`/unset (exit via the ISP), or `block` (reject their IPv4). |
+| `VPN_GATEWAY6` | _(unset)_ | Default IPv6 egress for unmapped users: an **IP or DNS name** (route `IPV6_SUBNET` to it), `direct` (exit via the ISP), or `block`/unset (reject their IPv6). |
 | `VPN_GATEWAY_TABLE` | `100` | Routing table used for the gateway default route. Named gateways use the following tables (101, 102, …). |
 | `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
-| `VPN_GATEWAYS` | _(unset)_ | Named gateways for [per-user routing](#per-user-gateways), e.g. `nl=172.28.0.2,us=172.28.0.4`. |
-| `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address per gateway name, e.g. `nl=fd00::2`. |
-| `VPN_GATEWAYS_FILE` | _(unset)_ | File defining named gateways (`name ipv4 [ipv6]` per line), merged with `VPN_GATEWAYS`/`VPN_GATEWAYS6`. Startup only. See [Defining gateways in a file](#defining-gateways-in-a-file). |
+| `VPN_GATEWAYS` | _(unset)_ | Named gateways for [per-user routing](#per-user-gateways), e.g. `nl=172.28.0.2,us=172.28.0.4`. IPs or DNS names. |
+| `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address (or DNS name) per gateway name, e.g. `nl=fd00::2`. |
+| `VPN_GATEWAYS_FILE` | _(unset)_ | File defining named gateways (`name ipv4 [ipv6]` per line), merged with `VPN_GATEWAYS`/`VPN_GATEWAYS6`. Names fixed at startup; addresses may be [re-resolved live](#dns-named-gateways-and-hot-reload). See [Defining gateways in a file](#defining-gateways-in-a-file). |
+| `VPN_GATEWAYS_RESOLVE_INTERVAL` | `0` | Seconds between re-resolving DNS-named gateways (`0` = off). See [DNS-named gateways and hot-reload](#dns-named-gateways-and-hot-reload). |
 | `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. |
 | `VPN_USER_GATEWAY_FILE` | _(unset)_ | File holding the username → gateway map (one per line), reloadable at runtime. See [Hot-reloading the user map](#hot-reloading-the-user-map). |
 | `VPN_USER_GATEWAY_WATCH` | `0` | `1` = auto-`vpngw-reload` when the map file changes. |
@@ -132,6 +133,8 @@ de       172.28.0.9    fd00:de::2
 
 The file is merged with `VPN_GATEWAYS` / `VPN_GATEWAYS6` **per field**, the file winning: a gateway's IPv4 comes from the file if listed there (else `VPN_GATEWAYS`), and its IPv6 from the file's 3rd column if present (else `VPN_GATEWAYS6`, else dropped). `#` comments and blank lines are ignored.
 
+Each address may also be a **DNS name** instead of a literal IP (for example the Docker service name of the upstream sidecar). It is resolved to an address at startup, and — with `VPN_GATEWAYS_RESOLVE_INTERVAL` set — re-resolved live if it later moves. See [DNS-named gateways and hot-reload](#dns-named-gateways-and-hot-reload).
+
 ### Blocking a family per gateway
 
 Either address column may be the reserved keyword **`block`** instead of an IP — that family is then **blocked** for the gateway's users, so it can't leak out anywhere:
@@ -149,7 +152,42 @@ lan6         block         2001:db8::9    # IPv6-only gateway: IPv4 blocked
 
 A gateway must route at least one family — `block block` is rejected — and IPv4 must always be stated explicitly (an IP or `block`), so you never lose IPv4 by omission. `block` and `direct` are reserved and can't be used as gateway names. (`drop` is accepted as a synonym for `block`.)
 
-> **Startup only.** Gateway definitions are read once at container start — adding, removing, or re-pointing a gateway requires a restart. (Only the *user → gateway* map reloads live; see below.) A gateway creates a routing table and kill-switch chain, which are built at boot; changing that set safely at runtime is intentionally out of scope. The user map may reference any gateway defined here.
+> **Names are startup only.** The *set* of gateway names is read once at container start — adding or removing a gateway requires a restart, because each gateway creates a routing table and kill-switch chain built at boot. A gateway's **address** is not fixed, though: a DNS-named gateway is re-resolved live (see below), and the *user → gateway* map reloads live too. The user map may reference any gateway defined here.
+
+## DNS-named gateways and hot-reload
+
+A gateway address may be a **DNS name** anywhere an IP is accepted — `VPN_GATEWAY`, `VPN_GATEWAY6`, `VPN_GATEWAYS`, `VPN_GATEWAYS6`, and the `VPN_GATEWAYS_FILE` columns. This is handy when the upstream is a sidecar addressed by its Docker service name rather than a pinned IP:
+
+```
+# name       ipv4       ipv6
+nordvpn      nordvpn    block        # resolve the "nordvpn" service to its IPv4
+```
+
+The name is resolved to an address at container start and used for the routing table's default route and the kill-switch next-hop guard.
+
+**The problem this creates:** the route and the kill switch pin a *literal* next-hop IP. If the sidecar restarts and Docker hands it a **new** IP, a name resolved once at boot goes stale and that gateway's traffic fails closed. Set **`VPN_GATEWAYS_RESOLVE_INTERVAL`** (seconds) to have the `svc-vpngw-gw-resolve` service re-resolve every DNS-named gateway on that interval and, when a next-hop moved:
+
+1. replace that routing table's `default via` with the new address, and
+2. rebuild the kill-switch chain **in place** — the named address sets are untouched, so **every connected client keeps its session** (no reconnect).
+
+```yaml
+environment:
+  - VPN_GATEWAYS_FILE=/etc/ocserv/gateways.map
+  - VPN_GATEWAYS_RESOLVE_INTERVAL=30      # re-resolve every 30s
+```
+
+Force a pass at any time without waiting for the interval:
+
+```bash
+docker exec <container> vpngw-gw-resolve
+```
+
+Notes and limits:
+
+- **Addresses only.** Re-resolution changes a gateway's *address*; it never adds or removes gateway names or reassigns routing tables, so no live session ever has to migrate. Changing the set of gateways still needs a restart.
+- **Fail-safe on lookup failure.** A name that can't be resolved on a given pass keeps its **last-known-good** address — a transient DNS blip never tears routing down.
+- **Stable pick.** If a name has several addresses and the current one is still among them, it's kept (no needless churn); otherwise the first resolved address is taken.
+- **Same interface assumed.** The per-gateway egress masquerade keys on the *interface*, not the IP, so it needs no update when only the address changes (the normal sidecar-restart case). A gateway moving to a *different* interface is not covered by re-resolution — restart to pick that up.
 
 ## Hot-reloading the user map
 

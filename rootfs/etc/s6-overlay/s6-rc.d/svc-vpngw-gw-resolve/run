@@ -1,0 +1,30 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+#
+# Optional poller that keeps DNS-named gateways fresh. When
+# VPN_GATEWAYS_RESOLVE_INTERVAL is a positive number of seconds and gateway mode
+# is active, re-run vpngw-gw-resolve on that interval so a gateway sidecar that
+# restarts with a new IP is followed without a container restart.
+#
+# When disabled (interval 0/unset) or gateway mode is off the service idles, so
+# it can stay in the s6 user bundle unconditionally.
+
+set -eu
+
+. /usr/local/bin/backend-functions
+
+case "$vpn_gateways_resolve_interval" in
+    ''|*[!0-9]*) exec sleep infinity ;;
+esac
+[ "$vpn_gateways_resolve_interval" -gt 0 ] || exec sleep infinity
+
+if [ ! -f "$vpngw_state_dir/gateways" ] && [ ! -f "$vpngw_state_dir/subnet" ]; then
+    log_error "[VPNGW-RESOLVE] Gateway mode is not active; not polling"
+    exec sleep infinity
+fi
+
+log "[VPNGW-RESOLVE] Re-resolving gateway hostnames every ${vpn_gateways_resolve_interval}s"
+while :; do
+    sleep "$vpn_gateways_resolve_interval"
+    /usr/local/bin/vpngw-gw-resolve || true
+done

@@ -1,0 +1,31 @@
+#!/bin/sh
+# shellcheck shell=sh
+#
+# Re-resolve DNS-named gateways and, when a next-hop address has moved, update
+# the affected routing table's default route and rebuild the kill-switch chain
+# IN PLACE - live sessions keep their set membership and are not reconnected.
+# Only gateway ADDRESSES are re-resolved; the set of gateway names and their
+# routing-table assignments are fixed at boot (defined via VPN_GATEWAYS /
+# VPN_GATEWAYS_FILE / VPN_GATEWAY[6]).
+#
+# Run it manually:   docker exec <container> vpngw-gw-resolve
+# Or automatically:  set VPN_GATEWAYS_RESOLVE_INTERVAL=<seconds> and the
+#                    svc-vpngw-gw-resolve service re-runs it on that interval.
+#
+# A gateway name that fails to resolve keeps its last-known-good address, so a
+# transient DNS failure never tears routing down.
+
+set -u
+
+. /usr/local/bin/backend-functions
+
+if [ ! -d "$vpngw_state_dir" ] ||
+   { [ ! -f "$vpngw_state_dir/gateways" ] && [ ! -f "$vpngw_state_dir/subnet" ]; }; then
+    log_error "[VPNGW-RESOLVE] Gateway mode is not active; nothing to resolve"
+    exit 1
+fi
+
+(
+    flock 9
+    vpngw_reconcile_gateways
+) 9>"$vpngw_state_dir/vpngw.lock"
