@@ -15,8 +15,8 @@ Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
 
 | Variable | Default | Description |
 |---|---|---|
-| `VPN_GATEWAY` | _(unset)_ | Upstream gateway IP. Steers `VPN_SUBNET` to it and installs the kill switch. Unset or `direct` = normal standalone ocserv (clients exit via the ISP). |
-| `VPN_GATEWAY6` | _(unset)_ | Upstream IPv6 gateway. Set it to route the IPv6 client subnet too; unset = forwarded client IPv6 is dropped. |
+| `VPN_GATEWAY` | _(unset)_ | Default IPv4 egress for unmapped users: an **IP** (steer `VPN_SUBNET` to it + kill switch), `direct`/unset (exit via the ISP), or `block` (reject their IPv4). |
+| `VPN_GATEWAY6` | _(unset)_ | Default IPv6 egress for unmapped users: an **IP** (route `IPV6_SUBNET` to it), `direct` (exit via the ISP), or `block`/unset (reject their IPv6). |
 | `VPN_GATEWAY_TABLE` | `100` | Routing table used for the gateway default route. Named gateways use the following tables (101, 102, …). |
 | `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
 | `VPN_GATEWAYS` | _(unset)_ | Named gateways for [per-user routing](#per-user-gateways), e.g. `nl=172.28.0.2,us=172.28.0.4`. |
@@ -27,7 +27,7 @@ Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
 | `VPN_USER_GATEWAY_WATCH` | `0` | `1` = auto-`vpngw-reload` when the map file changes. |
 | `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (wins over the subnet rule). |
 
-When `VPN_GATEWAY` and `VPN_GATEWAYS` are unset, the `init-vpngw` service is a no-op — ocserv behaves exactly as a standalone server (including normal IPv6).
+When no egress control is set — `VPN_GATEWAY`/`VPN_GATEWAYS`/`VPN_GATEWAYS_FILE` unset and `VPN_GATEWAY6` unset or `direct` — the `init-vpngw` service is a no-op and ocserv behaves exactly as a standalone server (including normal IPv6). Setting any of them (including `VPN_GATEWAY6=block`) activates gateway mode.
 
 ## How it works
 
@@ -66,8 +66,11 @@ In every case clients lose internet rather than leaking out the host's real IP.
 
 ## IPv6
 
-- **Upstream is IPv4-only** (the NordVPN container is, by default): leave `VPN_GATEWAY6` unset. Forwarded client IPv6 is dropped so it can't bypass the IPv4 policy rule.
+- **Upstream is IPv4-only** (the NordVPN container is, by default): leave `VPN_GATEWAY6` unset (or set it to `block`). Forwarded client IPv6 is **rejected** (ICMPv6 admin-prohibited) so it can't bypass the IPv4 policy rule, and clients fall back to IPv4 fast.
 - **Upstream is dual-stack**: set `VPN_GATEWAY6` to its IPv6 address. ocserv policy-routes `IPV6_SUBNET` to it with the same fail-closed next-hop guard. This also needs working IPv6 on the Docker network and the upstream forwarding IPv6 (see [Networking NAT and Routing#ipv6](Networking-NAT-and-Routing#ipv6)).
+- **Keep IPv6 on the ISP**: set `VPN_GATEWAY6=direct` to send unmapped users' IPv6 out the container's own connection while their IPv4 goes through the gateway. Note this exposes their real IPv6 address — only use it when that's intended.
+
+The same three forms (an IP, `direct`, `block`) apply to `VPN_GATEWAY` for IPv4: an IP tunnels unmapped users, `direct`/unset sends them out the ISP, and `block` rejects their IPv4 entirely.
 
 ## Per-user gateways
 
