@@ -26,6 +26,7 @@ These are read by the container's startup scripts (`backend-functions`) and driv
 | `VPN_USER_GATEWAY_FILE` | _(unset)_ | Path to a file holding the username → gateway map, one `user gateway` (or `user=gateway`) per line, with `#` comments — an alternative to a large `VPN_USER_GATEWAY`. Merged with the env var (file wins on conflict). Reload it live with `vpngw-reload`. See [Gateway Mode#hot-reloading-the-user-map](Gateway-Mode#hot-reloading-the-user-map). |
 | `VPN_USER_GATEWAY_WATCH` | `0` | When `1`, a watcher service re-runs `vpngw-reload` automatically whenever the file at `VPN_USER_GATEWAY_FILE` changes. |
 | `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules; must be numerically lower (= stronger) than `VPN_GATEWAY_RULE_PRIO`. |
+| `CERT_WATCH` | `0` | When `1`, the `svc-cert-watch` service watches the `server-cert`/`server-key` files declared in `ocserv.conf` and sends ocserv a `SIGHUP` (via `cert-reload`) whenever one changes, so a renewed certificate is reloaded **without a container restart** and without dropping live sessions. Relative cert paths are resolved against the `ocserv.conf` directory. Run `docker exec <container> cert-reload` to force one reload. See [Reverse Proxy and Certificates#certificate-renewal](Reverse-Proxy-and-Certificates#certificate-renewal). |
 
 > **About `PUID`/`PGID`:** this image does **not** implement LinuxServer-style `PUID`/`PGID` user remapping. Setting them has no effect; ocserv drops privileges internally via the `run-as-user`/`run-as-group` directives in `ocserv.conf`.
 

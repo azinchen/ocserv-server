@@ -78,6 +78,7 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | `VPN_USER_GATEWAY_FILE` | _(unset)_ | Path to a mapping file (one `user gateway` per line; `#` comments allowed) — an alternative to a large `VPN_USER_GATEWAY` value. Merged with it (file wins on conflict). Edit and run `docker exec <container> vpngw-reload` to apply changes to live sessions without a restart. See [Gateway Mode](Gateway-Mode#hot-reloading-the-user-map). |
 | `VPN_USER_GATEWAY_WATCH` | `0` | Set to `1` to auto-run `vpngw-reload` whenever `VPN_USER_GATEWAY_FILE` changes (no manual command needed). |
 | `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (must be lower than `VPN_GATEWAY_RULE_PRIO` to win). |
+| `CERT_WATCH` | `0` | Set to `1` to watch the TLS certificate files listed in `ocserv.conf` (`server-cert`/`server-key`) and, when one changes (e.g. a Let's Encrypt renewal), send ocserv a `SIGHUP` so it reloads the new certificate **without a restart** — connected clients keep their sessions and new connections use the new cert. Run `docker exec <container> cert-reload` to force a reload. See [Reverse Proxy and Certificates](https://github.com/azinchen/ocserv-server/wiki/Reverse-Proxy-and-Certificates#certificate-renewal). |
 
 Full reference: [Configuration Reference](https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference).
 

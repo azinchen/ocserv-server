@@ -51,26 +51,47 @@ openssl x509 -in .../live/example.com/fullchain.pem -noout -ext subjectAltName
 
 No. Because SWAG doesn't proxy the VPN, ocserv does **not** need to be on SWAG's Docker network — it only needs the cert files. Running ocserv on its own default bridge is perfectly fine.
 
-## Certificate renewal → restart ocserv
+## Certificate renewal
 
-ocserv loads certificates **at startup**. When SWAG renews the Let's Encrypt cert, ocserv keeps using the old one in memory until it restarts. Add a SWAG post-renewal hook to restart ocserv automatically.
+ocserv loads certificates **into memory at startup** and does not notice when the files on disk change. So when SWAG renews the Let's Encrypt cert, ocserv keeps serving the **old** one until it is told to reload. It re-reads its certificates on `SIGHUP` — and, crucially, a SIGHUP reload does **not** drop connected clients: existing per-connection workers keep the certificate they started with, and new connections use the reloaded one. Only a full restart forces everyone to reconnect.
 
-Create `…/swag-config/etc/letsencrypt/renewal-hooks/post/restart-ocserv.sh`:
+There are three ways to pick up a renewed cert, from most to least convenient.
+
+### Option 1 — `CERT_WATCH=1` (zero-touch, recommended)
+
+Set the environment variable and the container watches the `server-cert`/`server-key` files from your `ocserv.conf` and reloads ocserv automatically whenever one changes:
+
+```yaml
+services:
+  ocserv:
+    image: azinchen/ocserv-server:latest
+    environment:
+      - CERT_WATCH=1
+    # ...
+```
+
+Nothing else to wire up — no Docker socket, no renewal hook. When SWAG rewrites the cert, ocserv reloads it in place and live sessions are unaffected. This is the pattern that mirrors `VPN_USER_GATEWAY_WATCH` for the gateway map.
+
+### Option 2 — SWAG post-renewal hook (no restart)
+
+If you prefer to trigger the reload explicitly, add a hook that runs `cert-reload` in the ocserv container. Create `…/swag-config/etc/letsencrypt/renewal-hooks/post/reload-ocserv.sh`:
 
 ```bash
 #!/bin/bash
-docker restart ocserv-server
+docker exec ocserv-server cert-reload
 ```
-
-Make it executable:
 
 ```bash
-chmod +x .../renewal-hooks/post/restart-ocserv.sh
+chmod +x .../renewal-hooks/post/reload-ocserv.sh
 ```
 
-This runs after each successful renewal. Active sessions drop briefly while ocserv restarts, then clients reconnect.
+`cert-reload` sends ocserv a SIGHUP, so this also reloads the new cert **without dropping sessions**. The hook needs access to the Docker socket from inside SWAG, or run it on the host.
 
-> The restart needs access to the Docker socket from inside SWAG, or run the hook on the host. Adapt to your setup.
+### Option 3 — restart ocserv
+
+Only needed if you must **invalidate the old certificate immediately** (e.g. a key compromise) — a restart is the only way to evict sessions still using the old cert. Same hook, replacing the command with `docker restart ocserv-server`; active sessions drop and clients reconnect.
+
+> **Manual reload:** at any time you can run `docker exec ocserv-server cert-reload` yourself to reload the current cert files without a restart.
 
 ## Self-signed certificates (testing only)
 

@@ -1,0 +1,38 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+#
+# Optional watcher for the TLS certificate files. When CERT_WATCH=1, send ocserv
+# a SIGHUP (via cert-reload) whenever a watched server-cert/server-key file
+# changes, so a renewed certificate (e.g. from certbot/SWAG) is applied for new
+# connections without a container restart and without dropping live sessions.
+#
+# When watching is disabled the service idles, so it can stay in the s6 user
+# bundle unconditionally.
+
+set -eu
+
+. /usr/local/bin/backend-functions
+
+if [ "$cert_watch" != "1" ]; then
+    exec sleep infinity
+fi
+
+# Watch the directories holding the cert/key files (not the files themselves) so
+# atomic rename-replace renewals are caught; cert-reload filters events down to
+# the actual cert/key basenames.
+set --
+for d in $(cert_watch_dirs); do
+    if [ -d "$d" ]; then
+        set -- "$@" "$d"
+    else
+        log_error "[CERT-WATCH] Directory $d does not exist; not watching it"
+    fi
+done
+
+if [ "$#" -eq 0 ]; then
+    log_error "[CERT-WATCH] CERT_WATCH=1 but no server-cert/server-key files found in $ocserv_config; not watching"
+    exec sleep infinity
+fi
+
+log "[CERT-WATCH] Watching certificate files for changes: $(cert_watch_files | tr '\n' ' ')"
+exec inotifyd /usr/local/bin/cert-reload "$@"

@@ -152,26 +152,31 @@ services:
 
 No shared Docker network is defined — and none is needed. ocserv reaches the certificate through the read-only `/swag-config` mount, and serves clients directly on `8443`. SWAG continues to own `443` for everything else.
 
-## Auto-restart on certificate renewal
+## Reload ocserv on certificate renewal
 
-ocserv loads certificates **at startup** and keeps them in memory. After SWAG renews the cert, ocserv keeps serving the old one until it restarts — so wire up a restart on renewal.
+ocserv loads certificates **at startup** and keeps them in memory. After SWAG renews the cert, ocserv keeps serving the old one until it reloads — so it has to be told. The simplest way is to let the container do it for you:
 
-Create `…/swag-config/etc/letsencrypt/renewal-hooks/post/restart-ocserv.sh`:
+```yaml
+    environment:
+      - CERT_WATCH=1
+```
+
+With `CERT_WATCH=1` the container watches the `server-cert`/`server-key` files and sends ocserv a `SIGHUP` whenever SWAG rewrites them — the new cert is picked up **without a restart and without dropping connected clients**. No renewal hook, no Docker socket needed.
+
+If you'd rather trigger it explicitly, add a SWAG post-renewal hook that reloads (not restarts) ocserv — `…/swag-config/etc/letsencrypt/renewal-hooks/post/reload-ocserv.sh`:
 
 ```bash
 #!/bin/bash
-docker restart ocserv-server
+docker exec ocserv-server cert-reload
 ```
-
-Make it executable:
 
 ```bash
-chmod +x .../swag-config/etc/letsencrypt/renewal-hooks/post/restart-ocserv.sh
+chmod +x .../swag-config/etc/letsencrypt/renewal-hooks/post/reload-ocserv.sh
 ```
 
-SWAG runs hooks under `renewal-hooks/post/` after every successful renewal. Active sessions drop briefly during the restart, then clients reconnect.
+SWAG runs hooks under `renewal-hooks/post/` after every successful renewal. `cert-reload` sends a SIGHUP, so live sessions are unaffected. A full `docker restart ocserv-server` is only necessary if you must invalidate the old certificate immediately.
 
-> The hook restarts a container, so it needs Docker access — either give the SWAG container the Docker socket, or run the hook on the host.
+> The hook talks to Docker, so it needs the Docker socket inside SWAG, or run the hook on the host.
 
 See [[Reverse Proxy and Certificates]] for the broader certificate guide.
 

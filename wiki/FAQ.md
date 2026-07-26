@@ -34,7 +34,7 @@ Change `camouflage_secret` in `ocserv.conf` and restart. Update client URLs to t
 `docker exec -it ocserv-server ocpasswd -c /etc/ocserv/ocpasswd alice`. See [[User Management]].
 
 **Do config changes need a restart?**
-Yes for `ocserv.conf` and certificates. New/changed `ocpasswd` users take effect on the next login without a restart.
+Yes for `ocserv.conf`. **Certificates** can be reloaded without a restart: ocserv re-reads them on `SIGHUP`, which keeps connected clients online — run `docker exec ocserv-server cert-reload`, or set `CERT_WATCH=1` to have the container reload automatically when the cert files change (see [Reverse Proxy and Certificates#certificate-renewal](Reverse-Proxy-and-Certificates#certificate-renewal)). New/changed `ocpasswd` users take effect on the next login without a restart.
 
 **Where's the upstream documentation?**
 ocserv project: https://ocserv.gitlab.io/www/ · this image: https://github.com/azinchen/ocserv-server
