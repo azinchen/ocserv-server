@@ -29,11 +29,7 @@ if [ "$ipv6_forward" = "1" ]; then
     fi
 fi
 
-# Translate the iptables-style interface wildcard (e.g. vpns+) to nftables syntax (vpns*)
-case "$vpn_if" in
-    *+) vpn_ifname="${vpn_if%+}*" ;;
-    *)  vpn_ifname="$vpn_if" ;;
-esac
+# $vpn_ifname (the nftables tunnel interface match) is set by backend-functions.
 
 # IPv4 NAT
 log "[INIT-NAT] Setting up IPv4 NAT for subnet $vpn_subnet via $wan_if"
@@ -56,9 +52,34 @@ gw_dev() { # print the egress interface for a gateway IP ($1 = -4|-6, $2 = IP)
         | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}'
 }
 
+# Print every next-hop address for a family across the subnet default
+# (VPN_GATEWAY/VPN_GATEWAY6) and the named gateways (VPN_GATEWAYS + VPN_GATEWAYS6
+# + VPN_GATEWAYS_FILE, merged the same way init-vpngw does). DNS names are
+# resolved to addresses; reserved keywords are skipped. $1 = -4|-6.
+gw_addrs() {
+    if [ "$1" = "-6" ]; then
+        _def="$vpn_gateway6"; _col=3
+    else
+        _def="$vpn_gateway"; _col=2
+    fi
+    {
+        printf '%s\n' "$_def"
+        vpngw_gateways_merged "$vpn_gateways" "$vpn_gateways6" "$vpn_gateways_file" \
+            | awk -v c="$_col" '{ print $c }'
+    } | while read -r _tok; do
+        case "$_tok" in ""|block|drop|direct|none) continue ;; esac
+        if gw_is_literal "$_tok"; then
+            printf '%s\n' "$_tok"
+        elif _ip="$(gw_resolve_one "$1" "$_tok")"; then
+            printf '%s\n' "$_ip"
+        else
+            log_error "[INIT-NAT] Warning: cannot resolve gateway host '$_tok'"
+        fi
+    done
+}
+
 gw_ifs4=""
-for gw in $vpn_gateway $(kv_pairs "$vpn_gateways" | awk '{print $2}'); do
-    case "$gw" in block|drop|direct|none) continue ;; esac
+for gw in $(gw_addrs -4); do
     dev="$(gw_dev -4 "$gw")"
     if [ -z "$dev" ]; then
         log_error "[INIT-NAT] Warning: cannot resolve egress interface for gateway $gw"
@@ -71,8 +92,7 @@ for gw in $vpn_gateway $(kv_pairs "$vpn_gateways" | awk '{print $2}'); do
 done
 
 gw_ifs6=""
-for gw in $vpn_gateway6 $(kv_pairs "$vpn_gateways6" | awk '{print $2}'); do
-    case "$gw" in block|drop|direct|none) continue ;; esac
+for gw in $(gw_addrs -6); do
     dev="$(gw_dev -6 "$gw")"
     if [ -z "$dev" ]; then
         log_error "[INIT-NAT] Warning: cannot resolve egress interface for gateway $gw"

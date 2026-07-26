@@ -75,6 +75,7 @@ fi
 if [ -n "$vpn_gateways" ] || [ -n "$vpn_gateways_file" ]; then
     vpngw_gateways_merged "$vpn_gateways" "$vpn_gateways6" "$vpn_gateways_file" \
         > "$vpngw_state_dir/gateways.tmp"
+    : > "$vpngw_state_dir/gateways.src"
     idx=0
     while read -r name gw4 gw6; do
         [ -n "$name" ] || continue
@@ -88,8 +89,8 @@ if [ -n "$vpn_gateways" ] || [ -n "$vpn_gateways_file" ]; then
                 exit 1
                 ;;
         esac
-        # gw4/gw6 are each an IP or "block" (block that family); gw4 "none" means
-        # no IPv4 was given at all. A gateway must route at least one family.
+        # gw4/gw6 are each an IP, a DNS name or "block" (block that family); gw4
+        # "none" means no IPv4 was given at all. A gateway must route a family.
         if [ "$gw4" = "none" ]; then
             log_error "[INIT-VPNGW] Gateway '$name' has no IPv4 address; use 'block' for an IPv6-only gateway"
             exit 1
@@ -98,17 +99,36 @@ if [ -n "$vpn_gateways" ] || [ -n "$vpn_gateways_file" ]; then
             log_error "[INIT-VPNGW] Gateway '$name' blocks both IPv4 and IPv6; it would route nothing"
             exit 1
         fi
+        # Record the source tokens (may be DNS names) so svc-vpngw-gw-resolve can
+        # re-resolve them later, then resolve names to addresses for routing.
+        printf '%s %s %s\n' "$name" "$gw4" "$gw6" >> "$vpngw_state_dir/gateways.src"
+        rgw4="$gw4"
+        if ! gw_is_literal "$gw4"; then
+            if ! rgw4="$(gw_resolve_one -4 "$gw4")"; then
+                log_error "[INIT-VPNGW] Gateway '$name': cannot resolve IPv4 host '$gw4'"
+                exit 1
+            fi
+            log "[INIT-VPNGW] Gateway '$name': resolved IPv4 $gw4 -> $rgw4"
+        fi
+        rgw6="$gw6"
+        if ! gw_is_literal "$gw6"; then
+            if ! rgw6="$(gw_resolve_one -6 "$gw6")"; then
+                log_error "[INIT-VPNGW] Gateway '$name': cannot resolve IPv6 host '$gw6'"
+                exit 1
+            fi
+            log "[INIT-VPNGW] Gateway '$name': resolved IPv6 $gw6 -> $rgw6"
+        fi
         idx=$((idx + 1))
         gw_table=$((vpn_gateway_table + idx))
-        log "[INIT-VPNGW] Gateway '$name': table $gw_table (v4 $gw4 / v6 $gw6)"
-        if [ "$gw4" != "block" ]; then
-            ip route replace default via "$gw4" table "$gw_table"
+        log "[INIT-VPNGW] Gateway '$name': table $gw_table (v4 $rgw4 / v6 $rgw6)"
+        if [ "$rgw4" != "block" ]; then
+            ip route replace default via "$rgw4" table "$gw_table"
         fi
-        if [ "$gw6" != "block" ]; then
-            ip -6 route replace default via "$gw6" table "$gw_table" \
+        if [ "$rgw6" != "block" ]; then
+            ip -6 route replace default via "$rgw6" table "$gw_table" \
                 || log_error "[INIT-VPNGW] Warning: could not add IPv6 route for gateway '$name'"
         fi
-        printf '%s %s %s %s\n' "$name" "$gw_table" "$gw4" "$gw6" >> "$vpngw_state_dir/gateways"
+        printf '%s %s %s %s\n' "$name" "$gw_table" "$rgw4" "$rgw6" >> "$vpngw_state_dir/gateways"
     done < "$vpngw_state_dir/gateways.tmp"
     rm -f "$vpngw_state_dir/gateways.tmp"
 fi
@@ -130,28 +150,49 @@ fi
 
 # ---- Subnet default for unmapped users -------------------------------------
 # Policy-route the whole client subnet to the default gateway ONLY when it is a
-# real IP. "" (ISP) and "block" add no route: their traffic uses the main table
-# and the kill switch below either lets it out the WAN (ISP) or rejects it.
+# real IP (or a DNS name resolving to one). "" (ISP) and "block" add no route:
+# their traffic uses the main table and the kill switch below either lets it out
+# the WAN (ISP) or rejects it. The resolved next-hops are recorded in the
+# "subnet" state file (v4 v6; "-" = unset/ISP) so the reconciler can rebuild the
+# kill switch when a DNS-named default gateway is re-resolved to a new address.
+sub4="-"
 case "$vpn_gateway" in
-    ""|block) : ;;
+    "")    : ;;
+    block) sub4="block" ;;
     *)
-        log "[INIT-VPNGW] Routing $vpn_subnet via $vpn_gateway (table $table)"
-        ip route replace default via "$vpn_gateway" table "$table"
+        if gw_is_literal "$vpn_gateway"; then
+            sub4="$vpn_gateway"
+        elif ! sub4="$(gw_resolve_one -4 "$vpn_gateway")"; then
+            log_error "[INIT-VPNGW] VPN_GATEWAY: cannot resolve IPv4 host '$vpn_gateway'"
+            exit 1
+        fi
+        log "[INIT-VPNGW] Routing $vpn_subnet via $sub4 (table $table)"
+        ip route replace default via "$sub4" table "$table"
         ip rule show | grep -q "from $vpn_subnet lookup $table" \
             || ip rule add from "$vpn_subnet" lookup "$table" priority "$prio"
         ;;
 esac
+sub6="-"
 case "$vpn_gateway6" in
-    ""|block|direct) : ;;
+    "")     : ;;
+    block)  sub6="block" ;;
+    direct) sub6="direct" ;;
     *)
-        log "[INIT-VPNGW] Routing $ipv6_subnet via $vpn_gateway6 (table $table)"
-        ip -6 route replace default via "$vpn_gateway6" table "$table" \
+        if gw_is_literal "$vpn_gateway6"; then
+            sub6="$vpn_gateway6"
+        elif ! sub6="$(gw_resolve_one -6 "$vpn_gateway6")"; then
+            log_error "[INIT-VPNGW] VPN_GATEWAY6: cannot resolve IPv6 host '$vpn_gateway6'"
+            exit 1
+        fi
+        log "[INIT-VPNGW] Routing $ipv6_subnet via $sub6 (table $table)"
+        ip -6 route replace default via "$sub6" table "$table" \
             || log_error "[INIT-VPNGW] Warning: could not add IPv6 gateway route"
         ip -6 rule show 2>/dev/null | grep -q "from $ipv6_subnet lookup $table" \
             || ip -6 rule add from "$ipv6_subnet" lookup "$table" priority "$prio" \
             || log_error "[INIT-VPNGW] Warning: could not add IPv6 policy rule"
         ;;
 esac
+printf '%s %s\n' "$sub4" "$sub6" > "$vpngw_state_dir/subnet"
 
 # ---- Kill switch (defense in depth) --------------------------------------
 # The policy routes already force client traffic to the gateways, but if a
@@ -166,84 +207,15 @@ esac
 #     admin-prohibited, so the client fails fast (and falls back to the other
 #     family) instead of hanging - and it can't fall through to the subnet guard
 #     or the default route. Reject (not drop) because a block is intentional;
-#     the next-hop guards below stay drop as a silent failsafe against leaks.
+#     the next-hop guards stay drop as a silent failsafe against leaks.
 #   * Default gateway (IPv4/IPv6): same next-hop guard for the whole subnet.
 # A gateway that blocks a family has no gw_<name>_v{4,6} set (its users go to
 # v{4,6}_block instead); only routed families get a next-hop guard.
-case "$vpn_if" in
-    *+) vpn_ifname="${vpn_if%+}*" ;;
-    *)  vpn_ifname="$vpn_if" ;;
-esac
-
-nft_sets=""
-user_rules=""
-if [ -f "$vpngw_state_dir/gateways" ]; then
-    while read -r name gw_table gw4 gw6; do
-        if [ "$gw4" != "block" ]; then
-            nft_sets="$nft_sets
-    set gw_${name}_v4 { type ipv4_addr; }"
-            user_rules="$user_rules
-        ip saddr @gw_${name}_v4 oifname \"$wan_if\" rt ip nexthop != $gw4 drop
-        ip saddr @gw_${name}_v4 oifname \"$wan_if\" accept"
-        fi
-        if [ "$gw6" != "block" ]; then
-            nft_sets="$nft_sets
-    set gw_${name}_v6 { type ipv6_addr; }"
-            user_rules="$user_rules
-        ip6 saddr @gw_${name}_v6 oifname \"$wan_if\" rt ip6 nexthop != $gw6 drop
-        ip6 saddr @gw_${name}_v6 oifname \"$wan_if\" accept"
-        fi
-    done < "$vpngw_state_dir/gateways"
-fi
-if [ -f "$vpngw_state_dir/users" ]; then
-    nft_sets="$nft_sets
-    set direct_v4 { type ipv4_addr; }
-    set direct_v6 { type ipv6_addr; }
-    set v4_block { type ipv4_addr; }
-    set v6_block { type ipv6_addr; }"
-    user_rules="$user_rules
-        ip saddr @direct_v4 oifname \"$wan_if\" accept
-        ip6 saddr @direct_v6 oifname \"$wan_if\" accept
-        ip saddr @v4_block reject with icmp type admin-prohibited
-        ip6 saddr @v6_block reject with icmpv6 type admin-prohibited"
-fi
-
-# Subnet guard for unmapped users, per family:
-#   IP      -> next-hop guard (drop if it would leave by any other next-hop)
-#   ""      -> exit via ISP: no guard (their WAN traffic is accepted)
-#   block   -> reject their WAN-bound traffic (v6: all forwarded) fail-closed
-# These come AFTER the per-session rules above, so they only catch users not
-# handled by a named gateway / direct / block set.
-default_rules=""
-add_default_rule() {
-    if [ -z "$default_rules" ]; then
-        default_rules="$1"
-    else
-        default_rules="$default_rules
-        $1"
-    fi
-}
-case "$vpn_gateway" in
-    "")    : ;;
-    block) add_default_rule "ip saddr $vpn_subnet oifname \"$wan_if\" reject with icmp type admin-prohibited" ;;
-    *)     add_default_rule "ip saddr $vpn_subnet oifname \"$wan_if\" rt ip nexthop != $vpn_gateway drop" ;;
-esac
-case "$vpn_gateway6" in
-    direct)   : ;;
-    ""|block) add_default_rule "meta nfproto ipv6 iifname \"$vpn_ifname\" reject with icmpv6 type admin-prohibited" ;;
-    *)        add_default_rule "ip6 saddr $ipv6_subnet oifname \"$wan_if\" rt ip6 nexthop != $vpn_gateway6 drop" ;;
-esac
-
-nft delete table inet ocserv_gw 2>/dev/null || true
-if nft -f - <<EOF
-table inet ocserv_gw {$nft_sets
-    chain forward {
-        type filter hook forward priority -10; policy accept;$user_rules
-        $default_rules
-    }
-}
-EOF
-then
+#
+# The set declarations and chain rules are built from state (gateways, users,
+# subnet) by helpers shared with svc-vpngw-gw-resolve, which rebuilds just the
+# chain in place when a DNS-named next-hop is re-resolved to a new address.
+if vpngw_load_killswitch; then
     log "[INIT-VPNGW] Kill-switch installed (table inet ocserv_gw)"
 else
     log_error "[INIT-VPNGW] Warning: kill-switch nft rules failed to load; relying on policy routing only"
