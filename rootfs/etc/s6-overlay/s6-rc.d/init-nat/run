@@ -58,6 +58,7 @@ gw_dev() { # print the egress interface for a gateway IP ($1 = -4|-6, $2 = IP)
 
 gw_ifs4=""
 for gw in $vpn_gateway $(kv_pairs "$vpn_gateways" | awk '{print $2}'); do
+    case "$gw" in block|drop|direct|none) continue ;; esac
     dev="$(gw_dev -4 "$gw")"
     if [ -z "$dev" ]; then
         log_error "[INIT-NAT] Warning: cannot resolve egress interface for gateway $gw"
@@ -71,6 +72,7 @@ done
 
 gw_ifs6=""
 for gw in $vpn_gateway6 $(kv_pairs "$vpn_gateways6" | awk '{print $2}'); do
+    case "$gw" in block|drop|direct|none) continue ;; esac
     dev="$(gw_dev -6 "$gw")"
     if [ -z "$dev" ]; then
         log_error "[INIT-NAT] Warning: cannot resolve egress interface for gateway $gw"

@@ -28,10 +28,19 @@ vpn_user_gateway_file="${VPN_USER_GATEWAY_FILE:-}"
 vpn_user_gateway_watch="${VPN_USER_GATEWAY_WATCH:-0}"
 vpn_gateway_user_rule_prio="${VPN_GATEWAY_USER_RULE_PRIO:-900}"
 
-# VPN_GATEWAY=direct is an explicit alias for "no default gateway": unmapped
-# users exit via the container's default route (the ISP)
-[ "$vpn_gateway" = "direct" ] && vpn_gateway=""
-[ "$vpn_gateway6" = "direct" ] && vpn_gateway6=""
+# Normalise the subnet-default gateway values (unmapped users). Each family
+# accepts an IP, "direct" (exit via the container's default route / ISP) or
+# "block" ("drop" is an alias; the family is rejected fail-closed):
+#   VPN_GATEWAY (v4):  "direct" and unset both mean ISP -> "";  result "", "block", IP
+#   VPN_GATEWAY6 (v6): unset means "block" (no IPv6 leak);      result "", "direct", "block", IP
+#                      ("" is treated as "block"; "direct" is kept distinct)
+case "$vpn_gateway" in
+    direct) vpn_gateway="" ;;
+    drop)   vpn_gateway="block" ;;
+esac
+case "$vpn_gateway6" in
+    drop) vpn_gateway6="block" ;;
+esac
 
 # Runtime state shared between init-vpngw and the ocserv connect/disconnect hook
 vpngw_state_dir="/run/ocserv-vpngw"

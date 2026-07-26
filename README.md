@@ -66,8 +66,8 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | `VPN_SUBNET` | `10.10.10.0/24` | VPN client subnet (must match `ipv4-network` in `ocserv.conf`) |
 | `WAN_IF` | _(auto)_ | WAN interface for NAT. Auto-detected from the container's default route (falls back to `eth0`); set explicitly to override |
 | `IPV6_NAT` | `0` | enable IPv6 masquerade (see the IPv6 notes on the wiki) |
-| `VPN_GATEWAY` | _(unset)_ | Route the client subnet out through an upstream gateway container (e.g. a NordVPN container with `FORWARD_FROM`) via source-based policy routing. Set to the gateway's IP. Adds a fail-closed nft kill switch (`inet ocserv_gw`) so client traffic can only leave toward the gateway. The gateway may sit on a different interface than `WAN_IF` (multi-network setups); its egress interface gets its own masquerade rule automatically. |
-| `VPN_GATEWAY6` | _(unset)_ | IPv6 gateway for gateway mode. If set, the IPv6 client subnet is policy-routed to it; if unset, forwarded client IPv6 is **dropped** to prevent leaks. |
+| `VPN_GATEWAY` | _(unset)_ | Default IPv4 egress for **unmapped** users. An **IP** routes the client subnet out through that upstream gateway container (e.g. a NordVPN container with `FORWARD_FROM`) via source-based policy routing, with a fail-closed nft kill switch (`inet ocserv_gw`); the gateway may sit on a different interface than `WAN_IF` (its egress gets its own masquerade automatically). `direct` (or unset) = exit via the ISP. `block` = reject their IPv4 (fail-closed). |
+| `VPN_GATEWAY6` | _(unset)_ | Default IPv6 egress for unmapped users. An **IP** policy-routes the IPv6 client subnet to it; `direct` = exit via the ISP; `block` (or unset) = reject their forwarded IPv6 to prevent leaks. |
 | `VPN_GATEWAY_TABLE` | `100` | Routing table used for gateway mode. |
 | `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
 | `VPN_GATEWAYS` | _(unset)_ | Named upstream gateways for per-user routing, e.g. `nl=172.28.0.2,us=172.28.0.4`. Each gets its own routing table and kill-switch set. |

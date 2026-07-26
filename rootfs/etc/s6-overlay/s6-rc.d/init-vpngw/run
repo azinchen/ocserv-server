@@ -40,9 +40,17 @@ restore_config() {
 
 rm -rf "$vpngw_state_dir"
 
-if [ -z "$vpn_gateway" ] && [ -z "$vpn_gateways" ] && [ -z "$vpn_gateways_file" ]; then
+# Gateway mode is active if any egress control is configured. A v6 value of
+# "direct" (IPv6 via ISP) or unset counts as "not controlling IPv6", same as a
+# plain server; "block" or an IP does control it and activates the mode.
+gw_active=0
+[ -n "$vpn_gateway" ] && gw_active=1
+[ -n "$vpn_gateways" ] && gw_active=1
+[ -n "$vpn_gateways_file" ] && gw_active=1
+case "$vpn_gateway6" in ""|direct) ;; *) gw_active=1 ;; esac
+if [ "$gw_active" = 0 ]; then
     restore_config
-    log "[INIT-VPNGW] VPN_GATEWAY/VPN_GATEWAYS not set; clients exit via the default route"
+    log "[INIT-VPNGW] No gateway configured; clients exit via the default route"
     exit 0
 fi
 
@@ -120,23 +128,30 @@ if [ "$vpngw_user_mode" = 1 ]; then
     fi
 fi
 
-# ---- Default gateway: IPv4 routing -----------------------------------------
-if [ -n "$vpn_gateway" ]; then
-    log "[INIT-VPNGW] Routing $vpn_subnet via $vpn_gateway (table $table)"
-    ip route replace default via "$vpn_gateway" table "$table"
-    ip rule show | grep -q "from $vpn_subnet lookup $table" \
-        || ip rule add from "$vpn_subnet" lookup "$table" priority "$prio"
-
-    # ---- Default gateway: IPv6 routing (only with an upstream v6 gateway) ---
-    if [ -n "${vpn_gateway6:-}" ]; then
+# ---- Subnet default for unmapped users -------------------------------------
+# Policy-route the whole client subnet to the default gateway ONLY when it is a
+# real IP. "" (ISP) and "block" add no route: their traffic uses the main table
+# and the kill switch below either lets it out the WAN (ISP) or rejects it.
+case "$vpn_gateway" in
+    ""|block) : ;;
+    *)
+        log "[INIT-VPNGW] Routing $vpn_subnet via $vpn_gateway (table $table)"
+        ip route replace default via "$vpn_gateway" table "$table"
+        ip rule show | grep -q "from $vpn_subnet lookup $table" \
+            || ip rule add from "$vpn_subnet" lookup "$table" priority "$prio"
+        ;;
+esac
+case "$vpn_gateway6" in
+    ""|block|direct) : ;;
+    *)
         log "[INIT-VPNGW] Routing $ipv6_subnet via $vpn_gateway6 (table $table)"
         ip -6 route replace default via "$vpn_gateway6" table "$table" \
             || log_error "[INIT-VPNGW] Warning: could not add IPv6 gateway route"
         ip -6 rule show 2>/dev/null | grep -q "from $ipv6_subnet lookup $table" \
             || ip -6 rule add from "$ipv6_subnet" lookup "$table" priority "$prio" \
             || log_error "[INIT-VPNGW] Warning: could not add IPv6 policy rule"
-    fi
-fi
+        ;;
+esac
 
 # ---- Kill switch (defense in depth) --------------------------------------
 # The policy routes already force client traffic to the gateways, but if a
@@ -193,17 +208,31 @@ if [ -f "$vpngw_state_dir/users" ]; then
         ip6 saddr @v6_block reject with icmpv6 type admin-prohibited"
 fi
 
+# Subnet guard for unmapped users, per family:
+#   IP      -> next-hop guard (drop if it would leave by any other next-hop)
+#   ""      -> exit via ISP: no guard (their WAN traffic is accepted)
+#   block   -> reject their WAN-bound traffic (v6: all forwarded) fail-closed
+# These come AFTER the per-session rules above, so they only catch users not
+# handled by a named gateway / direct / block set.
 default_rules=""
-if [ -n "$vpn_gateway" ]; then
-    default_rules="ip saddr $vpn_subnet oifname \"$wan_if\" rt ip nexthop != $vpn_gateway drop"
-    if [ -n "${vpn_gateway6:-}" ]; then
-        default_rules="$default_rules
-        ip6 saddr $ipv6_subnet oifname \"$wan_if\" rt ip6 nexthop != $vpn_gateway6 drop"
+add_default_rule() {
+    if [ -z "$default_rules" ]; then
+        default_rules="$1"
     else
         default_rules="$default_rules
-        meta nfproto ipv6 iifname \"$vpn_ifname\" reject with icmpv6 type admin-prohibited"
+        $1"
     fi
-fi
+}
+case "$vpn_gateway" in
+    "")    : ;;
+    block) add_default_rule "ip saddr $vpn_subnet oifname \"$wan_if\" reject with icmp type admin-prohibited" ;;
+    *)     add_default_rule "ip saddr $vpn_subnet oifname \"$wan_if\" rt ip nexthop != $vpn_gateway drop" ;;
+esac
+case "$vpn_gateway6" in
+    direct)   : ;;
+    ""|block) add_default_rule "meta nfproto ipv6 iifname \"$vpn_ifname\" reject with icmpv6 type admin-prohibited" ;;
+    *)        add_default_rule "ip6 saddr $ipv6_subnet oifname \"$wan_if\" rt ip6 nexthop != $vpn_gateway6 drop" ;;
+esac
 
 nft delete table inet ocserv_gw 2>/dev/null || true
 if nft -f - <<EOF
