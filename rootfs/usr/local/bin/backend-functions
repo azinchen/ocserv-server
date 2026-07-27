@@ -35,6 +35,7 @@ vpn_user_gateway_file="${VPN_USER_GATEWAY_FILE:-}"
 vpn_user_gateway_watch="${VPN_USER_GATEWAY_WATCH:-0}"
 vpn_gateway_user_rule_prio="${VPN_GATEWAY_USER_RULE_PRIO:-900}"
 cert_watch="${CERT_WATCH:-0}"
+cert_watch_interval="${CERT_WATCH_INTERVAL:-0}"
 ocserv_config="${OCSERV_CONFIG:-/etc/ocserv/ocserv.conf}"
 
 # Normalise the subnet-default gateway values (unmapped users). Each family
@@ -572,6 +573,22 @@ cert_watch_dirs() {
     cert_watch_files | while IFS= read -r _f; do
         dirname "$_f"
     done | awk '!seen[$0]++'
+}
+
+# Print a change fingerprint for the watched cert files - one "path=mtime:size"
+# line each. stat follows symlinks (-L) so both a certbot live->archive re-link
+# and an in-place overwrite change the value; a file that cannot be stat'd
+# contributes "=MISSING" so appearing/disappearing counts as a change too. Used
+# by the CERT_WATCH_INTERVAL poller (svc-cert-poll) on filesystems where inotify
+# can't observe changes (e.g. NFS-backed cert directories).
+cert_watch_fingerprint() {
+    cert_watch_files | while IFS= read -r _f; do
+        if _s="$(stat -L -c '%Y:%s' "$_f" 2>/dev/null)"; then
+            printf '%s=%s\n' "$_f" "$_s"
+        else
+            printf '%s=MISSING\n' "$_f"
+        fi
+    done
 }
 
 # Print the unique basenames (space-separated on one line) so cert-reload can

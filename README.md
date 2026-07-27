@@ -79,6 +79,7 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | `VPN_USER_GATEWAY_WATCH` | `0` | Set to `1` to auto-run `vpngw-reload` whenever `VPN_USER_GATEWAY_FILE` changes (no manual command needed). |
 | `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (must be lower than `VPN_GATEWAY_RULE_PRIO` to win). |
 | `CERT_WATCH` | `0` | Set to `1` to watch the TLS certificate files listed in `ocserv.conf` (`server-cert`/`server-key`) and, when one changes (e.g. a Let's Encrypt renewal), send ocserv a `SIGHUP` so it reloads the new certificate **without a restart** — connected clients keep their sessions and new connections use the new cert. Run `docker exec <container> cert-reload` to force a reload. See [Reverse Proxy and Certificates](https://github.com/azinchen/ocserv-server/wiki/Reverse-Proxy-and-Certificates#certificate-renewal). |
+| `CERT_WATCH_INTERVAL` | `0` | Polling fallback for `CERT_WATCH`, in seconds (`0` = off). Instead of `inotify`, re-checks the cert files' mtime/size every N seconds and reloads ocserv on change. Use it where inotify can't see the change — e.g. an **NFS-backed** cert directory. Symlinks are followed, so a certbot `live`→`archive` re-link is detected. Use `CERT_WATCH=1` for local/bind-mounted dirs; `CERT_WATCH_INTERVAL` otherwise. |
 
 Full reference: [Configuration Reference](https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference).
 

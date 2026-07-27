@@ -72,6 +72,8 @@ services:
 
 Nothing else to wire up — no Docker socket, no renewal hook. When SWAG rewrites the cert, ocserv reloads it in place and live sessions are unaffected. This is the pattern that mirrors `VPN_USER_GATEWAY_WATCH` for the gateway map.
 
+`CERT_WATCH` uses `inotify`, which needs to actually observe the change. That works when the cert lives in a **directory** bind-mounted into the container (the SWAG `/swag-config` layout above), but **not** if inotify can't see the write — most commonly an **NFS-backed** cert directory, or a *single cert file* bind-mounted in (an atomic-replace renewal there never reaches the container at all — mount the directory instead). For the NFS/inotify-blind case, use the polling fallback: set `CERT_WATCH_INTERVAL` to a number of seconds and `svc-cert-poll` re-checks the cert files' mtime/size on that interval and reloads on change (following symlinks, so a certbot `live`→`archive` re-link is caught). Pick one — `CERT_WATCH` for local/bind-mounted dirs, `CERT_WATCH_INTERVAL` otherwise.
+
 ### Option 2 — SWAG post-renewal hook (no restart)
 
 If you prefer to trigger the reload explicitly, add a hook that runs `cert-reload` in the ocserv container. Create `…/swag-config/etc/letsencrypt/renewal-hooks/post/reload-ocserv.sh`:

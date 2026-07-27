@@ -1,0 +1,40 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+#
+# Optional polling fallback for the TLS certificate files. When
+# CERT_WATCH_INTERVAL is a positive number of seconds, re-stat the
+# server-cert/server-key files on that interval and send ocserv a SIGHUP (via
+# cert-reload) whenever their mtime/size changes. Use this instead of CERT_WATCH
+# on filesystems where inotify can't see the change - e.g. an NFS-backed cert
+# directory. Following symlinks means a certbot live->archive re-link is caught.
+#
+# When disabled (interval 0/unset) the service idles, so it can stay in the s6
+# user bundle unconditionally.
+
+set -eu
+
+. /usr/local/bin/backend-functions
+
+case "$cert_watch_interval" in
+    ''|*[!0-9]*) exec sleep infinity ;;
+esac
+[ "$cert_watch_interval" -gt 0 ] || exec sleep infinity
+
+if [ -z "$(cert_watch_files)" ]; then
+    log_error "[CERT-POLL] CERT_WATCH_INTERVAL set but no server-cert/server-key files found in $ocserv_config; not polling"
+    exec sleep infinity
+fi
+
+log "[CERT-POLL] Polling certificate files every ${cert_watch_interval}s: $(cert_watch_files | tr '\n' ' ')"
+prev="$(cert_watch_fingerprint)"
+while :; do
+    sleep "$cert_watch_interval"
+    cur="$(cert_watch_fingerprint)"
+    [ "$cur" = "$prev" ] && continue
+    log "[CERT-POLL] Certificate change detected; reloading ocserv"
+    # Only advance the baseline on a successful reload, so a failed SIGHUP (e.g.
+    # ocserv not yet up, or a cert momentarily mid-swap) is retried next tick.
+    if cert_reload_ocserv; then
+        prev="$cur"
+    fi
+done
