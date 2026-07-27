@@ -15,6 +15,7 @@ if [ -z "$wan_if" ]; then
         | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
     wan_if="${wan_if:-eth0}"
 fi
+tcp_mss="${MSS:-}"
 vpn_if="${VPN_IF:-vpns+}"
 # nftables interface match for the VPN tunnel: translate the iptables-style
 # wildcard (vpns+) to nftables syntax (vpns*). Used by init-nat and init-vpngw.

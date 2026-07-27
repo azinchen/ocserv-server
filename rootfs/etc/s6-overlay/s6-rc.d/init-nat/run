@@ -147,4 +147,39 @@ table inet ocserv {
 }
 EOF
 
+# Clamp the client TCP (CSTP) MSS. ocserv terminates the client's TLS/TCP
+# connection locally, so on any path whose real MTU is below the local
+# interface MTU - a macvlan (no NAT hop to clamp for us), PPPoE, a tunnelled
+# uplink, or a remote PMTUD black hole such as a VPS peer - full-size segments
+# are silently dropped and the tunnel carries no data. Clamp SYN in both
+# directions on the WAN and any gateway-egress interface. Unset MSS clamps to
+# the path MTU (a no-op on plain 1500 links); MSS=<n> forces a hard cap where
+# PMTUD is broken (e.g. MSS=1300 for a VPS).
+if [ -n "$tcp_mss" ]; then
+    mss_size="$tcp_mss"
+    log "[INIT-NAT] Clamping client TCP MSS to $tcp_mss on $wan_if$gw_ifs4"
+else
+    mss_size="rt mtu"
+    log "[INIT-NAT] Clamping client TCP MSS to the path MTU on $wan_if$gw_ifs4"
+fi
+mss_out=""
+mss_in=""
+for dev in $wan_if $gw_ifs4; do
+    mss_out="$mss_out
+        oifname \"$dev\" tcp flags syn tcp option maxseg size set $mss_size"
+    mss_in="$mss_in
+        iifname \"$dev\" tcp flags syn tcp option maxseg size set $mss_size"
+done
+nft delete table inet ocserv_mss 2>/dev/null || true
+nft -f - <<EOF || log_error "[INIT-NAT] Warning: MSS clamp rules failed to load"
+table inet ocserv_mss {
+    chain postrouting {
+        type filter hook postrouting priority mangle; policy accept;$mss_out
+    }
+    chain prerouting {
+        type filter hook prerouting priority mangle; policy accept;$mss_in
+    }
+}
+EOF
+
 log "[INIT-NAT] NAT and forwarding setup complete"
