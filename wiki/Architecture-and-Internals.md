@@ -54,6 +54,15 @@ ocserv --foreground --config /etc/ocserv/ocserv.conf --log-stderr
 
 Logs go to the container's stdout/stderr, so `docker logs` shows everything.
 
+### Optional watcher services
+
+Four longruns stay in the service bundle unconditionally but **idle** (`sleep infinity`) unless their feature is switched on, so they add nothing when unused:
+
+- **svc-cert-watch** — when `CERT_WATCH=1`, watches the `server-cert`/`server-key` files from `ocserv.conf` (via `inotifyd`) and runs `cert-reload` on change, which sends ocserv a `SIGHUP`. ocserv re-reads the certificate without dropping connected clients. See [[Reverse Proxy and Certificates]].
+- **svc-cert-poll** — the polling fallback for the above: when `CERT_WATCH_INTERVAL>0`, re-stats the same cert files every N seconds and reloads on an mtime/size change, for filesystems where `inotify` can't see the write (e.g. NFS).
+- **svc-vpngw-watch** — when `VPN_USER_GATEWAY_WATCH=1`, re-runs `vpngw-reload` when `VPN_USER_GATEWAY_FILE` changes.
+- **svc-vpngw-gw-resolve** — when `VPN_GATEWAYS_RESOLVE_INTERVAL>0`, periodically re-resolves DNS-named gateways. Both are covered in [[Gateway Mode]].
+
 ## Configuration knobs are centralized
 
 All env-var defaults live in one helper, `/usr/local/bin/backend-functions`, which the service scripts source. That's where `VPN_SUBNET`, `WAN_IF`, `VPN_IF`, `IPV6_*` defaults and the logging helpers are defined. See [[Configuration Reference]].

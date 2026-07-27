@@ -1,0 +1,28 @@
+#!/bin/sh
+# shellcheck shell=sh
+#
+# Tell ocserv to reload its configuration and TLS certificates WITHOUT dropping
+# connected clients. ocserv re-reads server-cert/server-key on SIGHUP: existing
+# per-connection workers keep running on the certificate they started with, and
+# new connections use the reloaded one. So a renewed certificate is picked up
+# with no container restart and no forced reconnects.
+#
+# Run it manually:   docker exec <container> cert-reload
+# Or automatically:  set CERT_WATCH=1 and the svc-cert-watch service runs it
+#                    whenever a watched server-cert/server-key file changes.
+
+set -u
+
+. /usr/local/bin/backend-functions
+
+# When invoked by inotifyd as a directory watcher the args are: EVENTS DIR
+# SUBFILE. Ignore events for files in the watched directory that are not one of
+# ocserv's certificate/key files.
+if [ -n "${3:-}" ]; then
+    case " $(cert_watch_basenames)" in
+        *" $3 "*) ;;
+        *) exit 0 ;;
+    esac
+fi
+
+cert_reload_ocserv

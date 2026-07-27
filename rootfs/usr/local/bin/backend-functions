@@ -34,6 +34,9 @@ vpn_user_gateway="${VPN_USER_GATEWAY:-}"
 vpn_user_gateway_file="${VPN_USER_GATEWAY_FILE:-}"
 vpn_user_gateway_watch="${VPN_USER_GATEWAY_WATCH:-0}"
 vpn_gateway_user_rule_prio="${VPN_GATEWAY_USER_RULE_PRIO:-900}"
+cert_watch="${CERT_WATCH:-0}"
+cert_watch_interval="${CERT_WATCH_INTERVAL:-0}"
+ocserv_config="${OCSERV_CONFIG:-/etc/ocserv/ocserv.conf}"
 
 # Normalise the subnet-default gateway values (unmapped users). Each family
 # accepts an IP, "direct" (exit via the container's default route / ISP) or
@@ -532,4 +535,91 @@ vpngw_reconcile_gateways() {
         fi
     fi
     return 0
+}
+
+# ---- certificate hot-reload -----------------------------------------------
+# ocserv re-reads its server-cert/server-key files on SIGHUP without dropping
+# connected clients (existing per-connection workers keep their old cert; new
+# connections use the reloaded one). These helpers let cert-reload/svc-cert-watch
+# discover which files to watch straight from ocserv.conf, so a renewed cert
+# (certbot/SWAG) can be applied with no container restart.
+
+# Print the certificate/key files ocserv loads - one path per line - by reading
+# the server-cert and server-key directives from ocserv.conf. Inline "# ..."
+# comments and surrounding whitespace are stripped; relative paths are resolved
+# against the config file's directory (matching how ocserv reads them).
+cert_watch_files() {
+    [ -f "$ocserv_config" ] || return 0
+    _confdir="$(dirname "$ocserv_config")"
+    awk -v cd="$_confdir" '
+        {
+            line = $0
+            sub(/#.*/, "", line)                       # drop inline comments
+            if (line !~ /^[[:space:]]*(server-cert|server-key)[[:space:]]*=/)
+                next
+            sub(/^[^=]*=[[:space:]]*/, "", line)       # keep the value
+            sub(/[[:space:]]+$/, "", line)
+            if (line == "") next
+            if (line !~ /^\//) line = cd "/" line       # resolve relative paths
+            print line
+        }
+    ' "$ocserv_config" | awk '!seen[$0]++'
+}
+
+# Print the unique directories holding those files (what inotifyd watches -
+# watching the directory survives atomic rename-replace saves that certbot/SWAG
+# and editors use).
+cert_watch_dirs() {
+    cert_watch_files | while IFS= read -r _f; do
+        dirname "$_f"
+    done | awk '!seen[$0]++'
+}
+
+# Print a change fingerprint for the watched cert files - one "path=mtime:size"
+# line each. stat follows symlinks (-L) so both a certbot live->archive re-link
+# and an in-place overwrite change the value; a file that cannot be stat'd
+# contributes "=MISSING" so appearing/disappearing counts as a change too. Used
+# by the CERT_WATCH_INTERVAL poller (svc-cert-poll) on filesystems where inotify
+# can't observe changes (e.g. NFS-backed cert directories).
+cert_watch_fingerprint() {
+    cert_watch_files | while IFS= read -r _f; do
+        if _s="$(stat -L -c '%Y:%s' "$_f" 2>/dev/null)"; then
+            printf '%s=%s\n' "$_f" "$_s"
+        else
+            printf '%s=MISSING\n' "$_f"
+        fi
+    done
+}
+
+# Print the unique basenames (space-separated on one line) so cert-reload can
+# filter inotifyd directory events down to the files we actually care about.
+cert_watch_basenames() {
+    cert_watch_files | while IFS= read -r _f; do
+        basename "$_f"
+    done | awk '!seen[$0]++' | tr '\n' ' '
+}
+
+# Send ocserv a SIGHUP so it reloads config + certificates. ocserv is the
+# process supervised by the svc-ocserv s6 longrun, so s6-svc -h targets exactly
+# the ocserv main process (not the sec-mod or per-connection workers).
+cert_reload_ocserv() {
+    _svc="${S6_SVSCANDIR:-/run/service}/svc-ocserv"
+    if [ ! -d "$_svc" ]; then
+        log_error "[CERT-RELOAD] ocserv service dir $_svc not found; is ocserv running?"
+        return 1
+    fi
+    # Resolve s6-svc explicitly: a manual `docker exec ... cert-reload` does not
+    # have the s6 /command dir on PATH, only the service scripts do.
+    _s6svc="$(command -v s6-svc 2>/dev/null || true)"
+    [ -n "$_s6svc" ] || { [ -x /command/s6-svc ] && _s6svc=/command/s6-svc; }
+    if [ -z "$_s6svc" ]; then
+        log_error "[CERT-RELOAD] s6-svc not found; cannot signal ocserv"
+        return 1
+    fi
+    if "$_s6svc" -h "$_svc"; then
+        log "[CERT-RELOAD] Sent SIGHUP to ocserv; new connections use the reloaded certificate"
+        return 0
+    fi
+    log_error "[CERT-RELOAD] Failed to signal ocserv via s6-svc"
+    return 1
 }
