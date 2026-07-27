@@ -152,32 +152,61 @@ EOF
 # interface MTU - a macvlan (no NAT hop to clamp for us), PPPoE, a tunnelled
 # uplink, or a remote PMTUD black hole such as a VPS peer - full-size segments
 # are silently dropped and the tunnel carries no data. Clamp SYN in both
-# directions on the WAN and any gateway-egress interface. Unset MSS clamps to
-# the path MTU (a no-op on plain 1500 links); MSS=<n> forces a hard cap where
-# PMTUD is broken (e.g. MSS=1300 for a VPS).
-if [ -n "$tcp_mss" ]; then
-    mss_size="$tcp_mss"
-    log "[INIT-NAT] Clamping client TCP MSS to $tcp_mss on $wan_if$gw_ifs4"
-else
-    mss_size="rt mtu"
-    log "[INIT-NAT] Clamping client TCP MSS to the path MTU on $wan_if$gw_ifs4"
+# directions on the WAN and any gateway-egress interface. The clamp only ever
+# LOWERS an advertised MSS - a peer that announced less keeps its value, so a
+# constrained client is never pushed above what its own path can carry. Unset
+# MSS derives the cap from each interface's MTU (40/60-byte IPv4/IPv6 headers;
+# a no-op on plain 1500 links); MSS=<n> forces a hard cap where the reduction
+# is not locally visible and PMTUD is broken (e.g. MSS=1300 for a VPS peer).
+# Numeric values throughout: the kernel rejects "rt mtu" in prerouting, where
+# the inbound half of the clamp - the one that caps what the server sends -
+# must live.
+if [ -n "$tcp_mss" ] && ! { [ "$tcp_mss" -ge 536 ] && [ "$tcp_mss" -le 65535 ]; } 2>/dev/null; then
+    log_error "[INIT-NAT] Warning: ignoring invalid MSS '$tcp_mss' (expected 536-65535); clamping to the interface MTU instead"
+    tcp_mss=""
 fi
-mss_out=""
-mss_in=""
-for dev in $wan_if $gw_ifs4; do
-    mss_out="$mss_out
-        oifname \"$dev\" tcp flags syn tcp option maxseg size set $mss_size"
-    mss_in="$mss_in
-        iifname \"$dev\" tcp flags syn tcp option maxseg size set $mss_size"
+mss_devs="$wan_if"
+for dev in $gw_ifs4 $gw_ifs6; do
+    case " $mss_devs " in
+        *" $dev "*) ;;
+        *) mss_devs="$mss_devs $dev" ;;
+    esac
 done
+mss_rules() { # emit clamp rules for one direction ($1 = iifname|oifname)
+    for dev in $mss_devs; do
+        if [ -n "$tcp_mss" ]; then
+            printf '%s "%s" tcp flags syn tcp option maxseg size > %s tcp option maxseg size set %s\n' \
+                "$1" "$dev" "$tcp_mss" "$tcp_mss"
+        else
+            _mtu="$(cat "/sys/class/net/$dev/mtu" 2>/dev/null)" || _mtu=""
+            if [ -z "$_mtu" ]; then
+                log_error "[INIT-NAT] Warning: cannot read MTU of $dev; not clamping MSS on it"
+                continue
+            fi
+            printf '%s "%s" meta nfproto ipv4 tcp flags syn tcp option maxseg size > %s tcp option maxseg size set %s\n' \
+                "$1" "$dev" "$((_mtu - 40))" "$((_mtu - 40))"
+            printf '%s "%s" meta nfproto ipv6 tcp flags syn tcp option maxseg size > %s tcp option maxseg size set %s\n' \
+                "$1" "$dev" "$((_mtu - 60))" "$((_mtu - 60))"
+        fi
+    done
+}
+if [ -n "$tcp_mss" ]; then
+    log "[INIT-NAT] Clamping client TCP MSS to $tcp_mss on $mss_devs"
+else
+    log "[INIT-NAT] Clamping client TCP MSS to the interface MTU on $mss_devs"
+fi
+mss_out="$(mss_rules oifname)"
+mss_in="$(mss_rules iifname)"
 nft delete table inet ocserv_mss 2>/dev/null || true
 nft -f - <<EOF || log_error "[INIT-NAT] Warning: MSS clamp rules failed to load"
 table inet ocserv_mss {
     chain postrouting {
-        type filter hook postrouting priority mangle; policy accept;$mss_out
+        type filter hook postrouting priority mangle; policy accept;
+$(printf '%s' "$mss_out" | awk 'NF { print "        " $0 }')
     }
     chain prerouting {
-        type filter hook prerouting priority mangle; policy accept;$mss_in
+        type filter hook prerouting priority mangle; policy accept;
+$(printf '%s' "$mss_in" | awk 'NF { print "        " $0 }')
     }
 }
 EOF

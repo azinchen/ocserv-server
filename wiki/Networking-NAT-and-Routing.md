@@ -57,8 +57,10 @@ Symptom: the TLS handshake (small packets) completes and the client authenticate
 
 `init-nat` therefore installs an MSS clamp in a dedicated table (`inet ocserv_mss`) on SYN in **both directions**, on `WAN_IF` and any gateway-egress interface (both matter because the server terminates the connection: its SYN-ACK caps what the client sends; the mangled inbound SYN caps what the server sends):
 
-- **`MSS` unset** (default) — clamp to the **path MTU** (`size set rt mtu`). A no-op on plain 1500 bridge setups, so existing deployments are unaffected.
-- **`MSS=<n>`** — hard cap (e.g. `MSS=1300`) for paths where PMTUD is broken and the reduction is not on a locally-visible link.
+- **`MSS` unset** (default) — clamp to each **interface's MTU**, minus the 40/60-byte IPv4/IPv6 headers. A no-op on plain 1500 bridge setups, so existing deployments are unaffected.
+- **`MSS=<n>`** — hard cap (e.g. `MSS=1300`) for paths where PMTUD is broken and the reduction is not on a locally-visible link. Must be `536`–`65535`; an invalid value is ignored with a warning and the interface-MTU clamp applies instead.
+
+The clamp only ever **lowers** an advertised MSS (`size > n … size set n`) — a client that announced a smaller value because its own path is constrained is never pushed above it.
 
 Inspect it live:
 

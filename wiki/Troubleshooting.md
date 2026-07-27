@@ -57,7 +57,7 @@ A distinctive variant of "connected but dead": the TLS handshake (small packets)
 
 Cause: the real path MTU to the client is **below the local interface MTU**, and nothing is clamping the connection's MSS. ocserv terminates the client TCP connection locally, so the container must clamp it itself. Typical triggers: a **macvlan** deployment (no Docker NAT hop keeping segments small — this is exactly what bites when migrating from a bridge + published port, which worked, to macvlan), **PPPoE** / tunnelled uplinks, or a **remote PMTUD black hole** such as a VPS peer.
 
-The container clamps automatically to the path MTU (table `inet ocserv_mss`), which handles locally-visible reductions. If the reduction is remote and PMTUD is broken, set a hard cap:
+The container clamps automatically to the interface MTU (table `inet ocserv_mss`), which handles locally-visible reductions. If the reduction is remote and PMTUD is broken, set a hard cap:
 
 ```yaml
 environment:
