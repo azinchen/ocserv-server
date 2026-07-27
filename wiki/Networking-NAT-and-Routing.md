@@ -45,6 +45,29 @@ docker exec ocserv-server nft list table inet ocserv
 
 > The image is built with ocserv's **nftables** firewall backend and ships `nft` (not `iptables`). `--cap-add=NET_ADMIN` is required to install these rules.
 
+## MSS clamping
+
+ocserv terminates the client's TLS/TCP (CSTP) connection **locally**, so the usual "clamp MSS on the forward path" tricks don't apply — the server itself negotiates the segment size with the client. On any path whose real MTU is below the local interface MTU, the server's full-size segments are silently dropped:
+
+- **macvlan** deployments (no Docker NAT hop that would otherwise keep segments small)
+- **PPPoE** or tunnelled uplinks
+- a **remote PMTUD black hole** (e.g. reaching a VPS peer)
+
+Symptom: the TLS handshake (small packets) completes and the client authenticates, but the tunnel carries **no data** — `occtl` shows `RX=0`, the server retransmits its large segments forever, and the session dies on DPD timeout. See [Troubleshooting](Troubleshooting#connected-but-no-internet-data-plane-dead).
+
+`init-nat` therefore installs an MSS clamp in a dedicated table (`inet ocserv_mss`) on SYN in **both directions**, on `WAN_IF` and any gateway-egress interface (both matter because the server terminates the connection: its SYN-ACK caps what the client sends; the mangled inbound SYN caps what the server sends):
+
+- **`MSS` unset** (default) — clamp to the **path MTU** (`size set rt mtu`). A no-op on plain 1500 bridge setups, so existing deployments are unaffected.
+- **`MSS=<n>`** — hard cap (e.g. `MSS=1300`) for paths where PMTUD is broken and the reduction is not on a locally-visible link.
+
+Inspect it live:
+
+```bash
+docker exec ocserv-server nft list table inet ocserv_mss
+```
+
+The clamp is non-fatal: if the rules fail to load, `init-nat` logs a warning and the container still starts.
+
 ## Keep three things in sync
 
 For NAT to work, these must agree:

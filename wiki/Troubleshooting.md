@@ -47,6 +47,30 @@ Authentication succeeded but traffic doesn't flow. Check, in order:
 3. **Forwarding on?** The host needs `--sysctl net.ipv4.ip_forward=1`. The `init-nat` log will warn if it couldn't enable it.
 4. **Container egress works?** `docker exec ocserv-server ping -c2 1.1.1.1`. If this fails, it's a host/Docker networking problem, not ocserv.
 5. **Router not routing through the tunnel?** For Keenetic / Netcraze and similar, the tunnel can be up while the router still uses its ISP. Configure policy-based routing on the router. See [Clients and Devices](Clients-and-Devices#keenetic-and-netcraze-routers).
+6. **MSS/MTU blackhole?** The client authenticates but `occtl show users` shows `RX=0` and nothing ever arrives — see the next section.
+
+---
+
+## Authenticates, but RX=0 (MSS/MTU blackhole)
+
+A distinctive variant of "connected but dead": the TLS handshake (small packets) completes and the client authenticates, but the CSTP tunnel carries **no data at all** — `occtl` shows `RX=0`, and the session eventually dies on DPD timeout. A packet capture shows small segments ACKed up to a point, then every full-size (~MTU) segment unacknowledged and retransmitted forever.
+
+Cause: the real path MTU to the client is **below the local interface MTU**, and nothing is clamping the connection's MSS. ocserv terminates the client TCP connection locally, so the container must clamp it itself. Typical triggers: a **macvlan** deployment (no Docker NAT hop keeping segments small — this is exactly what bites when migrating from a bridge + published port, which worked, to macvlan), **PPPoE** / tunnelled uplinks, or a **remote PMTUD black hole** such as a VPS peer.
+
+The container clamps automatically to the path MTU (table `inet ocserv_mss`), which handles locally-visible reductions. If the reduction is remote and PMTUD is broken, set a hard cap:
+
+```yaml
+environment:
+  - MSS=1300
+```
+
+Verify the clamp rules are loaded:
+
+```bash
+docker exec ocserv-server nft list table inet ocserv_mss
+```
+
+See [Networking NAT and Routing#mss-clamping](Networking-NAT-and-Routing#mss-clamping).
 
 ---
 
