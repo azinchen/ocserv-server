@@ -79,13 +79,15 @@ if [ -n "$vpn_gateways" ] || [ -n "$vpn_gateways_file" ]; then
     idx=0
     while read -r name gw4 gw6; do
         [ -n "$name" ] || continue
+        # Names are embedded in nft set identifiers (gw_<name>_v4) and stored in
+        # whitespace-separated state files, hence the restricted charset.
         case "$name" in
             direct|block|drop)
                 log_error "[INIT-VPNGW] VPN_GATEWAYS: '$name' is a reserved gateway name"
                 exit 1
                 ;;
-            *[!a-zA-Z0-9_]*)
-                log_error "[INIT-VPNGW] VPN_GATEWAYS: invalid gateway name '$name' (use letters, digits, _)"
+            -*|*[!a-zA-Z0-9_-]*)
+                log_error "[INIT-VPNGW] VPN_GATEWAYS: invalid gateway name '$name' (use letters, digits, _, -; must not start with -)"
                 exit 1
                 ;;
         esac
