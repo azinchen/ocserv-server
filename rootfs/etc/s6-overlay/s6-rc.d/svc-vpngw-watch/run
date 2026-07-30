@@ -1,9 +1,12 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
 #
-# Optional watcher for the per-user gateway map file. When
-# VPN_USER_GATEWAY_WATCH=1 and VPN_USER_GATEWAY_FILE is set, re-run vpngw-reload
-# whenever the file changes, so edits apply without a container restart.
+# Optional watcher for the per-user map files. Re-runs vpngw-reload whenever a
+# watched file changes, so edits apply without a container restart:
+#   * VPN_USER_GATEWAY_WATCH=1 watches the gateway map (VPN_USER_GATEWAY_FILE)
+#   * VPN_USER_BYPASS_WATCH=1  watches the bypass map (VPN_USER_BYPASS_FILE)
+# Both may be enabled; their directories are watched together (deduplicated)
+# and vpngw-reload filters events down to the two map files' basenames.
 #
 # When watching is disabled (or nothing to watch) the service idles, so it can
 # stay in the s6 user bundle unconditionally.
@@ -12,29 +15,55 @@ set -eu
 
 . /usr/local/bin/backend-functions
 
-if [ "$vpn_user_gateway_watch" != "1" ]; then
-    exec sleep infinity
-fi
-if [ -z "$vpn_user_gateway_file" ]; then
-    log_error "[VPNGW-WATCH] VPN_USER_GATEWAY_WATCH=1 but VPN_USER_GATEWAY_FILE is unset; not watching"
-    exec sleep infinity
-fi
 if [ ! -f "$vpngw_state_dir/users" ]; then
-    log_error "[VPNGW-WATCH] Per-user gateway mode is not active; not watching"
+    if [ "$vpn_user_gateway_watch" = "1" ] || [ "$vpn_user_bypass_watch" = "1" ]; then
+        log_error "[VPNGW-WATCH] Per-user gateway mode is not active; not watching"
+    fi
     exec sleep infinity
 fi
 
-dir="$(dirname "$vpn_user_gateway_file")"
-if [ ! -d "$dir" ]; then
-    log_error "[VPNGW-WATCH] Directory $dir does not exist; not watching"
+watch_dirs=""
+add_watch() { # $1 = env label, $2 = file to watch (may be empty)
+    if [ -z "$2" ]; then
+        log_error "[VPNGW-WATCH] $1=1 but its map file variable is unset; not watching it"
+        return 0
+    fi
+    _d="$(dirname "$2")"
+    if [ ! -d "$_d" ]; then
+        log_error "[VPNGW-WATCH] Directory $_d does not exist; not watching $2"
+        return 0
+    fi
+    case " $watch_dirs " in
+        *" $_d "*) ;;
+        *) watch_dirs="$watch_dirs $_d" ;;
+    esac
+    log "[VPNGW-WATCH] Watching $2 for changes"
+}
+
+[ "$vpn_user_gateway_watch" = "1" ] && add_watch VPN_USER_GATEWAY_WATCH "$vpn_user_gateway_file"
+if [ "$vpn_user_bypass_watch" = "1" ]; then
+    if [ -f "$vpngw_state_dir/bypass_users" ]; then
+        add_watch VPN_USER_BYPASS_WATCH "$vpn_user_bypass_file"
+    else
+        log_error "[VPNGW-WATCH] VPN_USER_BYPASS_WATCH=1 but per-user bypass is not active; not watching"
+    fi
+fi
+
+if [ -z "$watch_dirs" ]; then
     exec sleep infinity
 fi
 
 # Apply whatever is on disk now — this catches edits made while we were not
 # watching, including editor rename-replace saves that restart this service —
-# then watch the directory for changes to the map file. Watching the directory
-# (not the file) survives atomic rename-replace saves; vpngw-reload filters
-# events to the map file's basename.
+# then watch the directories. Watching a directory (not the file) survives
+# atomic rename-replace saves; vpngw-reload filters events to the map files.
+# The :yw mask (subfile moved in / writable close) is essential: the default
+# all-events mask includes reads, and the reload itself READS the map files in
+# the watched directory - an unmasked watch feeds back into an event storm.
+watches=""
+for d in $watch_dirs; do
+    watches="$watches $d:yw"
+done
 /usr/local/bin/vpngw-reload || true
-log "[VPNGW-WATCH] Watching $vpn_user_gateway_file for changes"
-exec inotifyd /usr/local/bin/vpngw-reload "$dir"
+# shellcheck disable=SC2086
+exec inotifyd /usr/local/bin/vpngw-reload $watches

@@ -28,7 +28,10 @@ fi
 # Apply whatever is on disk now — this catches lists published while we were
 # not watching — then watch the directory. Watching the directory (not the
 # files) survives atomic rename-replace publishes; bypass-reload maps events
-# back to <pool>.list and ignores everything else.
+# back to <pool>.list and ignores everything else. The :yw mask (subfile moved
+# in / writable close) is essential: the default all-events mask includes
+# reads, and the reload itself READS the list files in the watched directory -
+# an unmasked watch feeds back into an event storm.
 /usr/local/bin/bypass-reload || true
 log "[BYPASS-WATCH] Watching $vpn_bypass_pools_dir for pool list changes"
-exec inotifyd /usr/local/bin/bypass-reload "$vpn_bypass_pools_dir"
+exec inotifyd /usr/local/bin/bypass-reload "$vpn_bypass_pools_dir:yw"

@@ -9,8 +9,9 @@
 # (assigned IPv6, if any). On connect we install a source policy rule steering
 # the session's address to its gateway's routing table and register the address
 # in the matching kill-switch set; on disconnect we remove them. Every session
-# is recorded under $vpngw_state_dir/sessions/<ip4> (username, gateway, IPs) so
-# vpngw-reload can re-apply mapping changes to live sessions without a restart.
+# is recorded under $vpngw_state_dir/sessions/<ip4> (username, gateway, IPs,
+# bypass pools) so vpngw-reload can re-apply mapping changes - gateway and
+# destination-bypass alike - to live sessions without a restart.
 #
 # State written by init-vpngw lives in $vpngw_state_dir:
 #   gateways               "name table gw4 gw6|-" per named gateway
@@ -88,8 +89,9 @@ case "$reason" in
             fi
             if [ -n "$sess_file" ]; then
                 mkdir -p "$sess_dir"
-                printf '%s %s %s %s\n' \
-                    "$username" "${gwname:--}" "$ip4" "${ip6:--}" > "$sess_file"
+                bp_rec="$(printf '%s' "$bypass_pools" | tr ' ' '+')"
+                printf '%s %s %s %s %s\n' \
+                    "$username" "${gwname:--}" "$ip4" "${ip6:--}" "${bp_rec:--}" > "$sess_file"
             fi
         ) 9>"$lock"; then
             log_error "[VPNGW-HOOK] Failed to route user '$username' (ip $ip4); rejecting session"
