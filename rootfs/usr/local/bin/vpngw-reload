@@ -1,25 +1,37 @@
 #!/bin/sh
 # shellcheck shell=sh
 #
-# Rebuild the per-user gateway map from VPN_USER_GATEWAY (env) + the file named
-# by VPN_USER_GATEWAY_FILE, and apply the changes to currently-connected
-# sessions IN PLACE (no reconnect). Safe to run repeatedly.
+# Rebuild the per-user gateway map (VPN_USER_GATEWAY + VPN_USER_GATEWAY_FILE)
+# and, when destination bypass is active, the per-user bypass map
+# (VPN_USER_BYPASS + VPN_USER_BYPASS_FILE), then apply the changes to
+# currently-connected sessions IN PLACE (no reconnect). Safe to run repeatedly.
 #
 # Run it manually:   docker exec <container> vpngw-reload
-# Or automatically:  set VPN_USER_GATEWAY_WATCH=1 and the svc-vpngw-watch
-#                    service re-runs it whenever the map file changes.
+# Or automatically:  set VPN_USER_GATEWAY_WATCH=1 (gateway map) and/or
+#                    VPN_USER_BYPASS_WATCH=1 (bypass map) and the
+#                    svc-vpngw-watch service re-runs it on file changes.
 #
-# The new map is validated in full before any live state is touched: an invalid
-# file aborts the reload and leaves connected sessions exactly as they were.
+# The new maps are validated in full before any live state is touched: an
+# invalid file aborts the reload and leaves connected sessions exactly as they
+# were. The POOL SET is fixed at startup (nft sets and marking rules); a map
+# referencing a pool unknown at startup is rejected.
 
 set -u
 
 . /usr/local/bin/backend-functions
 
 # When invoked by inotifyd as a directory watcher the args are: EVENTS DIR
-# SUBFILE. Ignore events for other files in the watched directory.
-if [ -n "${3:-}" ] && [ -n "$vpn_user_gateway_file" ]; then
-    [ "$3" = "$(basename "$vpn_user_gateway_file")" ] || exit 0
+# SUBFILE. Ignore events for files other than the watched map files.
+if [ -n "${3:-}" ]; then
+    if [ -n "$vpn_user_gateway_file" ] \
+        && [ "$3" = "$(basename "$vpn_user_gateway_file")" ]; then
+        :
+    elif [ -n "$vpn_user_bypass_file" ] \
+        && [ "$3" = "$(basename "$vpn_user_bypass_file")" ]; then
+        :
+    else
+        exit 0
+    fi
 fi
 
 if [ ! -d "$vpngw_state_dir" ] || [ ! -f "$vpngw_state_dir/users" ]; then
@@ -34,43 +46,59 @@ fi
         log_error "[VPNGW-RELOAD] Invalid map; live sessions left unchanged"
         exit 1
     fi
+    if [ -f "$vpngw_state_dir/bypass_users" ] && ! bypass_rebuild_users; then
+        log_error "[VPNGW-RELOAD] Invalid user-bypass map; live sessions left unchanged"
+        exit 1
+    fi
 
-    # Reconcile live sessions: for each recorded session whose gateway changed,
-    # remove the old per-session rules and install the new ones in place. The
-    # recorded gateway is "-" when the session is currently unmapped (it follows
-    # the subnet/default route).
+    # Reconcile live sessions: for each recorded session whose gateway OR
+    # bypass pools changed, remove the old per-session rules and install the
+    # new ones in place. The recorded gateway is "-" when the session is
+    # currently unmapped (it follows the subnet/default route); the recorded
+    # pools are '+'-joined ("-" = none).
     changed=0
     if [ -d "$vpngw_state_dir/sessions" ]; then
         for rec in "$vpngw_state_dir"/sessions/*; do
             [ -f "$rec" ] || continue
-            read -r s_user s_oldgw s_ip4 s_ip6 < "$rec" || continue
+            read -r s_user s_oldgw s_ip4 s_ip6 s_oldbp < "$rec" || continue
             [ "$s_ip6" = "-" ] && s_ip6=""
 
             newgw="$(awk -v u="$s_user" '$1 == u { print $2; exit }' "$vpngw_state_dir/users")"
             [ -z "$newgw" ] && newgw="-"
-            [ "$newgw" = "$s_oldgw" ] && continue
+            newbp="$(bypass_session_pools "$s_user" "$newgw" | tr ' ' '+')"
+            [ -z "$newbp" ] && newbp="-"
+            [ "$newgw" = "$s_oldgw" ] && [ "$newbp" = "${s_oldbp:--}" ] && continue
 
             vpngw_cleanup_session "$s_ip4" "$s_ip6"
             if [ "$newgw" != "-" ]; then
                 if vpngw_apply_session "$s_user" "$newgw" "$s_ip4" "$s_ip6"; then
-                    log "[VPNGW-RELOAD] User '$s_user' ($s_ip4) moved '$s_oldgw' -> '$newgw'"
+                    [ "$newgw" != "$s_oldgw" ] \
+                        && log "[VPNGW-RELOAD] User '$s_user' ($s_ip4) moved '$s_oldgw' -> '$newgw'"
                 else
                     vpngw_cleanup_session "$s_ip4" "$s_ip6"
                     log_error "[VPNGW-RELOAD] Could not apply gateway '$newgw' for '$s_user' ($s_ip4); left with no gateway"
                     newgw="-"
+                    newbp="$(bypass_session_pools "$s_user" "$newgw" | tr ' ' '+')"
+                    [ -z "$newbp" ] && newbp="-"
                 fi
-            else
+            elif [ "$newgw" != "$s_oldgw" ]; then
                 log "[VPNGW-RELOAD] User '$s_user' ($s_ip4) unmapped; follows default/subnet route"
             fi
-            # Re-register destination-bypass membership for the new gateway
-            # (cleanup above removed it; inherited pools follow the gateway).
-            bp="$(bypass_session_pools "$s_user" "$newgw")"
-            if [ -n "$bp" ]; then
+            # Re-register destination-bypass membership (cleanup above removed
+            # it; explicit and inherited pools both resolve via the new maps).
+            if [ "$newbp" != "-" ]; then
+                newbp_sp="$(echo "$newbp" | tr '+' ' ')"
                 # shellcheck disable=SC2086
-                bypass_apply_session "$s_ip4" "$s_ip6" $bp \
-                    || log_error "[VPNGW-RELOAD] Warning: could not re-apply bypass pools for '$s_user' ($s_ip4)"
+                if bypass_apply_session "$s_ip4" "$s_ip6" $newbp_sp; then
+                    [ "$newbp" != "${s_oldbp:--}" ] \
+                        && log "[VPNGW-RELOAD] User '$s_user' ($s_ip4) bypass pools now: $newbp_sp"
+                else
+                    log_error "[VPNGW-RELOAD] Warning: could not re-apply bypass pools for '$s_user' ($s_ip4)"
+                fi
+            elif [ "${s_oldbp:--}" != "-" ]; then
+                log "[VPNGW-RELOAD] User '$s_user' ($s_ip4) no longer bypasses the gateway"
             fi
-            printf '%s %s %s %s\n' "$s_user" "$newgw" "$s_ip4" "${s_ip6:--}" > "$rec"
+            printf '%s %s %s %s %s\n' "$s_user" "$newgw" "$s_ip4" "${s_ip6:--}" "$newbp" > "$rec"
             changed=$((changed + 1))
         done
     fi

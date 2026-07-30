@@ -246,7 +246,9 @@ environment:
   - VPN_GATEWAY_BYPASS=ru                           # unmapped users behind VPN_GATEWAY
 ```
 
-A user's pools resolve as: explicit `VPN_USER_BYPASS` entry (`none` = no bypass at all) → their named gateway's `VPN_GATEWAYS_BYPASS` pools → for unmapped users, `VPN_GATEWAY_BYPASS`. `direct` users inherit nothing (they are already direct). `VPN_USER_BYPASS` can also live in a file (`VPN_USER_BYPASS_FILE`), like the user map. Attachments and pool *names* are fixed at startup; pool *contents* are hot-reloadable. Referencing an undefined gateway, an invalid pool name, or attaching per-user bypass without the per-user hook fails startup loudly.
+A user's pools resolve as: explicit `VPN_USER_BYPASS` entry (`none` = no bypass at all) → their named gateway's `VPN_GATEWAYS_BYPASS` pools → for unmapped users, `VPN_GATEWAY_BYPASS`. `direct` users inherit nothing (they are already direct). Referencing an undefined gateway, an invalid pool name, or attaching per-user bypass without the per-user hook fails startup loudly.
+
+The per-user map can also live in a file (**`VPN_USER_BYPASS_FILE`**), like the gateway user map — and like it, the file is **hot-reloadable**: edit it and run `vpngw-reload` (or set **`VPN_USER_BYPASS_WATCH=1`** to apply on every save), and connected sessions are reconciled **in place** — a user gains/loses their pools without reconnecting. The reload validates the whole map first (an entry naming an unknown pool aborts it, sessions untouched). What stays fixed at startup: the pool *set* itself (each pool's nft sets and marking rules) and the env-only attachments (`VPN_GATEWAY_BYPASS`, `VPN_GATEWAYS_BYPASS`); pool *contents* hot-reload separately (below).
 
 ### How it works
 

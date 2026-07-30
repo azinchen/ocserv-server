@@ -40,6 +40,7 @@ vpn_gateway_bypass="${VPN_GATEWAY_BYPASS:-}"
 vpn_gateways_bypass="${VPN_GATEWAYS_BYPASS:-}"
 vpn_user_bypass="${VPN_USER_BYPASS:-}"
 vpn_user_bypass_file="${VPN_USER_BYPASS_FILE:-}"
+vpn_user_bypass_watch="${VPN_USER_BYPASS_WATCH:-0}"
 vpn_bypass_watch="${VPN_BYPASS_WATCH:-0}"
 vpn_bypass_rule_prio="${VPN_BYPASS_RULE_PRIO:-800}"
 vpn_bypass_mark="${VPN_BYPASS_MARK:-0xbc}"
@@ -420,6 +421,41 @@ bypass_session_pools() {
     fi
     [ "$_bp_p" = "none" ] && _bp_p=""
     printf '%s\n' "$_bp_p"
+}
+
+# Rebuild $vpngw_state_dir/bypass_users from VPN_USER_BYPASS (env) plus
+# VPN_USER_BYPASS_FILE (file wins on conflict) AT RUNTIME. Unlike at startup,
+# the set of pools is fixed (their nft sets and marking rules exist already),
+# so every referenced pool must be one of the configured ones; on any unknown
+# pool the existing map is left untouched and 1 is returned. Written ATOMICALLY
+# so a concurrent bypass_session_pools never reads a half-written map.
+bypass_rebuild_users() {
+    _bu_tmp="$vpngw_state_dir/bypass_users.new.$$"
+    : > "$_bu_tmp"
+    kv_merge_env_file "$vpn_user_bypass" "$vpn_user_bypass_file" > "$_bu_tmp.raw"
+    _bu_bad=0
+    while read -r _bu_u _bu_pl; do
+        [ -n "$_bu_u" ] || continue
+        if [ "$_bu_pl" = "none" ]; then
+            printf '%s none\n' "$_bu_u" >> "$_bu_tmp"
+            continue
+        fi
+        _bu_pl="$(echo "$_bu_pl" | tr '+' ' ')"
+        for _bu_p in $_bu_pl; do
+            if ! grep -qx "$_bu_p" "$vpngw_state_dir/bypass_pools" 2>/dev/null; then
+                log_error "[BYPASS] user-bypass map: unknown pool '$_bu_p' for user '$_bu_u' (the pool set is fixed at startup; restart to add pools)"
+                _bu_bad=1
+            fi
+        done
+        printf '%s %s\n' "$_bu_u" "$_bu_pl" >> "$_bu_tmp"
+    done < "$_bu_tmp.raw"
+    rm -f "$_bu_tmp.raw"
+    if [ "$_bu_bad" != 0 ]; then
+        rm -f "$_bu_tmp"
+        return 1
+    fi
+    mv "$_bu_tmp" "$vpngw_state_dir/bypass_users"
+    return 0
 }
 
 # Register a session's addresses in the bypass source sets of its pools.
