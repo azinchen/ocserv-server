@@ -40,6 +40,19 @@ restore_config() {
 
 rm -rf "$vpngw_state_dir"
 
+# Remove destination-bypass machinery from a previous run (rebuilt below when
+# configured). Delete our fwmark policy rules by priority + main table, the
+# shape only we install.
+nft delete table inet ocserv_bypass 2>/dev/null || true
+n=0
+while [ "$n" -lt 16 ] && ip rule del priority "$vpn_bypass_rule_prio" table main 2>/dev/null; do
+    n=$((n + 1))
+done
+n=0
+while [ "$n" -lt 16 ] && ip -6 rule del priority "$vpn_bypass_rule_prio" table main 2>/dev/null; do
+    n=$((n + 1))
+done
+
 # Gateway mode is active if any egress control is configured. A v6 value of
 # "direct" (IPv6 via ISP) or unset counts as "not controlling IPv6", same as a
 # plain server; "block" or an IP does control it and activates the mode.
@@ -50,6 +63,9 @@ gw_active=0
 case "$vpn_gateway6" in ""|direct) ;; *) gw_active=1 ;; esac
 if [ "$gw_active" = 0 ]; then
     restore_config
+    if [ -n "$vpn_gateway_bypass$vpn_gateways_bypass$vpn_user_bypass$vpn_user_bypass_file" ]; then
+        log_error "[INIT-VPNGW] Warning: destination-bypass settings ignored - no gateway is configured, so clients already exit direct"
+    fi
     log "[INIT-VPNGW] No gateway configured; clients exit via the default route"
     exit 0
 fi
@@ -148,6 +164,135 @@ if [ "$vpngw_user_mode" = 1 ]; then
     if [ -n "$vpn_user_gateway_file" ]; then
         log "[INIT-VPNGW] User-gateway map file: $vpn_user_gateway_file (reload with vpngw-reload)"
     fi
+fi
+
+# ---- Destination-bypass pools ----------------------------------------------
+# Traffic whose DESTINATION is in a named pool (a CIDR list file
+# $VPN_BYPASS_POOLS_DIR/<name>.list) exits direct via the main table instead of
+# the session's gateway - e.g. a cascade node in a country whose local
+# destinations must not take the upstream tunnel. Pools attach per user
+# (VPN_USER_BYPASS[_FILE]; "none" opts a user out), per named gateway
+# (VPN_GATEWAYS_BYPASS, inherited by its users) or to the default gateway's
+# unmapped users (VPN_GATEWAY_BYPASS). Multiple pools join with '+'.
+# Mechanism: a prerouting chain (table inet ocserv_bypass) fwmarks matching
+# client traffic; an "fwmark -> main" policy rule stronger than every gateway
+# rule routes it, and the kill switch accepts the mark explicitly - a pool
+# match is a deliberate go-direct and wins even over a blocked family.
+
+bypass_pools_used=""
+bypass_note_pool() { # validate one pool name ($1) from context $2; record it
+    case "$1" in
+        none)
+            log_error "[INIT-VPNGW] $2: 'none' is reserved (per-user opt-out), not a pool name"
+            exit 1
+            ;;
+        -*|*[!a-zA-Z0-9_-]*)
+            log_error "[INIT-VPNGW] $2: invalid pool name '$1' (use letters, digits, _, -; must not start with -)"
+            exit 1
+            ;;
+    esac
+    case " $bypass_pools_used " in
+        *" $1 "*) ;;
+        *) bypass_pools_used="$bypass_pools_used $1" ;;
+    esac
+}
+
+if [ -n "$vpn_gateway_bypass$vpn_gateways_bypass$vpn_user_bypass$vpn_user_bypass_file" ]; then
+    # The fwmark rule must be numerically stronger than the per-user rules or
+    # bypassed packets would still hit their gateway table first.
+    if ! ( : "$((vpn_bypass_mark))" ) 2>/dev/null || [ "$((vpn_bypass_mark))" -le 0 ]; then
+        log_error "[INIT-VPNGW] VPN_BYPASS_MARK: '$vpn_bypass_mark' is not a positive number (decimal or 0x hex)"
+        exit 1
+    fi
+    if ! { [ "$vpn_bypass_rule_prio" -gt 0 ] \
+        && [ "$vpn_bypass_rule_prio" -lt "$vpn_gateway_user_rule_prio" ]; } 2>/dev/null; then
+        log_error "[INIT-VPNGW] VPN_BYPASS_RULE_PRIO ($vpn_bypass_rule_prio) must be a number below VPN_GATEWAY_USER_RULE_PRIO ($vpn_gateway_user_rule_prio)"
+        exit 1
+    fi
+
+    # Default-gateway pools: apply to unmapped users. Meaningless when unmapped
+    # users already exit via the ISP (no VPN_GATEWAY and no controlled IPv6).
+    bypass_default=""
+    if [ -n "$vpn_gateway_bypass" ]; then
+        if [ -z "$vpn_gateway" ] && { [ -z "$vpn_gateway6" ] || [ "$vpn_gateway6" = "direct" ]; }; then
+            log_error "[INIT-VPNGW] Warning: VPN_GATEWAY_BYPASS ignored - unmapped users already exit direct (no VPN_GATEWAY)"
+        else
+            bypass_default="$(echo "$vpn_gateway_bypass" | tr '+' ' ')"
+            for p in $bypass_default; do
+                bypass_note_pool "$p" "VPN_GATEWAY_BYPASS"
+            done
+        fi
+    fi
+
+    # Per-gateway pools: inherited by every user mapped to that gateway.
+    if [ -n "$vpn_gateways_bypass" ]; then
+        if [ ! -f "$vpngw_state_dir/gateways" ] || [ "$vpngw_user_mode" != 1 ]; then
+            log_error "[INIT-VPNGW] VPN_GATEWAYS_BYPASS needs named gateways (VPN_GATEWAYS) and the per-user map (VPN_USER_GATEWAY[_FILE])"
+            exit 1
+        fi
+        kv_pairs "$vpn_gateways_bypass" > "$vpngw_state_dir/bypass_gws.tmp"
+        : > "$vpngw_state_dir/bypass_gws"
+        while read -r gname plist; do
+            [ -n "$gname" ] || continue
+            if ! awk -v n="$gname" '$1 == n { f = 1 } END { exit !f }' "$vpngw_state_dir/gateways"; then
+                log_error "[INIT-VPNGW] VPN_GATEWAYS_BYPASS: unknown gateway '$gname'"
+                exit 1
+            fi
+            plist="$(echo "$plist" | tr '+' ' ')"
+            for p in $plist; do
+                bypass_note_pool "$p" "VPN_GATEWAYS_BYPASS"
+            done
+            printf '%s %s\n' "$gname" "$plist" >> "$vpngw_state_dir/bypass_gws"
+        done < "$vpngw_state_dir/bypass_gws.tmp"
+        rm -f "$vpngw_state_dir/bypass_gws.tmp"
+    fi
+
+    # Per-user pools: strongest attachment; "none" opts the user out of any
+    # inherited bypass. Needs the connect hook, i.e. per-user mode (an empty
+    # VPN_USER_GATEWAY_FILE is enough to enable it).
+    if [ -n "$vpn_user_bypass" ] || [ -n "$vpn_user_bypass_file" ]; then
+        if [ "$vpngw_user_mode" != 1 ]; then
+            log_error "[INIT-VPNGW] VPN_USER_BYPASS needs the per-user connect hook; set VPN_USER_GATEWAY or point VPN_USER_GATEWAY_FILE at a file (it may be empty)"
+            exit 1
+        fi
+        kv_merge_env_file "$vpn_user_bypass" "$vpn_user_bypass_file" > "$vpngw_state_dir/bypass_users.tmp"
+        : > "$vpngw_state_dir/bypass_users"
+        while read -r uname plist; do
+            [ -n "$uname" ] || continue
+            if [ "$plist" = "none" ]; then
+                printf '%s none\n' "$uname" >> "$vpngw_state_dir/bypass_users"
+                continue
+            fi
+            plist="$(echo "$plist" | tr '+' ' ')"
+            for p in $plist; do
+                bypass_note_pool "$p" "VPN_USER_BYPASS"
+            done
+            printf '%s %s\n' "$uname" "$plist" >> "$vpngw_state_dir/bypass_users"
+        done < "$vpngw_state_dir/bypass_users.tmp"
+        rm -f "$vpngw_state_dir/bypass_users.tmp"
+    fi
+fi
+
+if [ -n "$bypass_pools_used" ]; then
+    # shellcheck disable=SC2086 # intentional split: one pool name per line
+    printf '%s\n' $bypass_pools_used > "$vpngw_state_dir/bypass_pools"
+    if [ "$vpngw_user_mode" = 1 ]; then
+        echo user > "$vpngw_state_dir/bypass_mode"
+    else
+        echo subnet > "$vpngw_state_dir/bypass_mode"
+    fi
+    [ -n "$bypass_default" ] && printf '%s\n' "$bypass_default" > "$vpngw_state_dir/bypass_default"
+    if ! bypass_load_table; then
+        log_error "[INIT-VPNGW] Could not install the bypass marking chain; aborting"
+        exit 1
+    fi
+    for p in $bypass_pools_used; do
+        bypass_load_pool "$p" || true
+    done
+    ip rule add fwmark "$vpn_bypass_mark" lookup main priority "$vpn_bypass_rule_prio"
+    ip -6 rule add fwmark "$vpn_bypass_mark" lookup main priority "$vpn_bypass_rule_prio" \
+        || log_error "[INIT-VPNGW] Warning: could not add the IPv6 bypass policy rule"
+    log "[INIT-VPNGW] Destination bypass active ($(cat "$vpngw_state_dir/bypass_mode") mode; pools:$bypass_pools_used; mark $vpn_bypass_mark prio $vpn_bypass_rule_prio)"
 fi
 
 # ---- Subnet default for unmapped users -------------------------------------

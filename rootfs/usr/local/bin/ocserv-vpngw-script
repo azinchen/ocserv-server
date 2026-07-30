@@ -64,6 +64,10 @@ case "$reason" in
 
         # Apply under the lock. Mapped users get a per-session rule; unmapped
         # users are only recorded (gateway "-") so a later reload can map them.
+        # Destination-bypass membership applies to mapped AND unmapped users
+        # (unmapped users inherit the default gateway's pools) and is as
+        # fail-closed as the gateway rules: a session we cannot register is
+        # rejected rather than silently routed without its bypass.
         if ! (
             flock 9
             [ -n "$ip4" ] && vpngw_cleanup_session "$ip4" "$ip6"
@@ -72,6 +76,15 @@ case "$reason" in
                     vpngw_cleanup_session "$ip4" "$ip6"
                     exit 1
                 fi
+            fi
+            bypass_pools="$(bypass_session_pools "$username" "${gwname:--}")"
+            if [ -n "$bypass_pools" ]; then
+                # shellcheck disable=SC2086
+                if ! bypass_apply_session "$ip4" "$ip6" $bypass_pools; then
+                    vpngw_cleanup_session "$ip4" "$ip6"
+                    exit 1
+                fi
+                log "[VPNGW-HOOK] User '$username' ($ip4${ip6:+, $ip6}) bypasses the gateway for pools: $bypass_pools"
             fi
             if [ -n "$sess_file" ]; then
                 mkdir -p "$sess_dir"

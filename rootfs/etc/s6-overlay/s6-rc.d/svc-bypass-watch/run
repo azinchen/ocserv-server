@@ -1,0 +1,34 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+#
+# Optional watcher for the destination-bypass pool list files. When
+# VPN_BYPASS_WATCH=1 and bypass pools are configured, re-run bypass-reload
+# whenever a file in $VPN_BYPASS_POOLS_DIR changes, so lists published by an
+# external process (or edited by hand) apply without a container restart.
+#
+# When watching is disabled (or nothing to watch) the service idles, so it can
+# stay in the s6 user bundle unconditionally.
+
+set -eu
+
+. /usr/local/bin/backend-functions
+
+if [ "$vpn_bypass_watch" != "1" ]; then
+    exec sleep infinity
+fi
+if [ ! -f "$vpngw_state_dir/bypass_pools" ]; then
+    log_error "[BYPASS-WATCH] Destination bypass is not active; not watching"
+    exec sleep infinity
+fi
+if [ ! -d "$vpn_bypass_pools_dir" ]; then
+    log_error "[BYPASS-WATCH] Pools directory $vpn_bypass_pools_dir does not exist; not watching"
+    exec sleep infinity
+fi
+
+# Apply whatever is on disk now — this catches lists published while we were
+# not watching — then watch the directory. Watching the directory (not the
+# files) survives atomic rename-replace publishes; bypass-reload maps events
+# back to <pool>.list and ignores everything else.
+/usr/local/bin/bypass-reload || true
+log "[BYPASS-WATCH] Watching $vpn_bypass_pools_dir for pool list changes"
+exec inotifyd /usr/local/bin/bypass-reload "$vpn_bypass_pools_dir"
