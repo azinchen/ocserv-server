@@ -62,6 +62,14 @@ fi
             else
                 log "[VPNGW-RELOAD] User '$s_user' ($s_ip4) unmapped; follows default/subnet route"
             fi
+            # Re-register destination-bypass membership for the new gateway
+            # (cleanup above removed it; inherited pools follow the gateway).
+            bp="$(bypass_session_pools "$s_user" "$newgw")"
+            if [ -n "$bp" ]; then
+                # shellcheck disable=SC2086
+                bypass_apply_session "$s_ip4" "$s_ip6" $bp \
+                    || log_error "[VPNGW-RELOAD] Warning: could not re-apply bypass pools for '$s_user' ($s_ip4)"
+            fi
             printf '%s %s %s %s\n' "$s_user" "$newgw" "$s_ip4" "${s_ip6:--}" > "$rec"
             changed=$((changed + 1))
         done

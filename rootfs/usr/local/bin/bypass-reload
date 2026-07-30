@@ -1,0 +1,55 @@
+#!/bin/sh
+# shellcheck shell=sh
+#
+# Reload destination-bypass pool list files ($VPN_BYPASS_POOLS_DIR/<name>.list)
+# into the live nft sets. Each pool is swapped ATOMICALLY (flush + repopulate in
+# one nft transaction), so lookups never see a half-loaded pool and connected
+# sessions are untouched. A non-empty file with no valid entry keeps the pool's
+# previous contents (last-known-good).
+#
+# Run it manually:   docker exec <container> bypass-reload [pool ...]
+#                    (no arguments = reload every configured pool)
+# Or automatically:  set VPN_BYPASS_WATCH=1 and svc-bypass-watch re-runs it
+#                    whenever a file in the pools directory changes.
+#
+# External producers should publish lists atomically (write <name>.list.tmp,
+# then mv over <name>.list) so a reload never reads a half-written file.
+
+set -u
+
+. /usr/local/bin/backend-functions
+
+if [ ! -f "$vpngw_state_dir/bypass_pools" ]; then
+    log_error "[BYPASS-RELOAD] Destination bypass is not active; nothing to reload"
+    exit 1
+fi
+
+# When invoked by inotifyd as a directory watcher the args are: EVENTS DIR
+# SUBFILE. Map the changed file to its pool and ignore other files (including
+# the .tmp half of an atomic publish).
+if [ $# -eq 3 ] && [ -d "$2" ]; then
+    case "$3" in
+        *.list) set -- "${3%.list}" ;;
+        *)      exit 0 ;;
+    esac
+    grep -qx "$1" "$vpngw_state_dir/bypass_pools" || exit 0
+fi
+
+if [ $# -eq 0 ]; then
+    # shellcheck disable=SC2046
+    set -- $(cat "$vpngw_state_dir/bypass_pools")
+fi
+
+rc=0
+(
+    flock 9
+    for pool in "$@"; do
+        if ! grep -qx "$pool" "$vpngw_state_dir/bypass_pools"; then
+            log_error "[BYPASS-RELOAD] Unknown pool '$pool' (configured: $(tr '\n' ' ' < "$vpngw_state_dir/bypass_pools"))"
+            exit 1
+        fi
+        bypass_load_pool "$pool" || exit 1
+    done
+) 9>"$vpngw_state_dir/vpngw.lock" || rc=1
+
+exit $rc

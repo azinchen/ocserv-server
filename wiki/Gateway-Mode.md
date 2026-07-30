@@ -215,6 +215,68 @@ To apply on every save automatically, set **`VPN_USER_GATEWAY_WATCH=1`** — a s
 
 > The connect/disconnect hook is installed whenever `VPN_USER_GATEWAY_FILE` is set, even if the file is empty or absent at startup — so you can start with no mappings and add them entirely at runtime. Named gateways themselves (`VPN_GATEWAYS`) are still fixed at startup; the file changes only *which user uses which existing gateway*.
 
+## Destination bypass pools
+
+Gateway mode is source-routed: *who* the client is decides where their traffic exits. Bypass pools add a **destination** dimension: traffic to addresses in a named pool exits **direct** (the container's default route / ISP) even for users whose everything-else goes to a gateway.
+
+The motivating setup is a **cascade**: the first ocserv node sits in Russia and forwards clients to an upstream node abroad (`VPN_GATEWAY`/`VPN_GATEWAYS`) — but traffic to Russian destinations should leave the first node directly, both for speed and because RU sites often block foreign exit IPs. With an `ru` pool attached, only non-RU traffic takes the upstream tunnel.
+
+### Defining pools
+
+A pool is a file `<name>.list` in **`VPN_BYPASS_POOLS_DIR`** (default `/etc/ocserv/pools`, i.e. under the mounted config volume): one IP or CIDR per line, IPv4 and IPv6 mixed freely, `#` comments allowed. Overlapping and duplicate entries are fine (they are merged on load); invalid lines are skipped with a warning. Country-sized pools (tens of thousands of prefixes) are matched with nftables interval sets — lookups stay fast.
+
+```
+# /etc/ocserv/pools/ru.list
+5.255.192.0/18
+77.88.0.0/18
+2a02:6b8::/32
+...
+```
+
+Pool names follow the gateway-name rules (letters, digits, `_`, `-`); `none` is reserved.
+
+### Attaching pools
+
+Three levels, strongest first — multiple pools join with `+`:
+
+```yaml
+environment:
+  - VPN_USER_BYPASS=alice=ru,tv=ru+corp,guest=none  # per user ("none" opts out of inheritance)
+  - VPN_GATEWAYS_BYPASS=nl=ru                       # per named gateway (all its users inherit)
+  - VPN_GATEWAY_BYPASS=ru                           # unmapped users behind VPN_GATEWAY
+```
+
+A user's pools resolve as: explicit `VPN_USER_BYPASS` entry (`none` = no bypass at all) → their named gateway's `VPN_GATEWAYS_BYPASS` pools → for unmapped users, `VPN_GATEWAY_BYPASS`. `direct` users inherit nothing (they are already direct). `VPN_USER_BYPASS` can also live in a file (`VPN_USER_BYPASS_FILE`), like the user map. Attachments and pool *names* are fixed at startup; pool *contents* are hot-reloadable. Referencing an undefined gateway, an invalid pool name, or attaching per-user bypass without the per-user hook fails startup loudly.
+
+### How it works
+
+`init-vpngw` builds a dedicated nft table `inet ocserv_bypass`: one interval set per pool plus, per pool, a source set of subscribed session addresses (maintained by the same connect/disconnect hook as the gateway rules). A prerouting chain fwmarks (default `0xbc`) client packets whose destination is in one of their pools, and a policy rule at priority `VPN_BYPASS_RULE_PRIO` (default `800` — stronger than the `900` per-user and `1000` subnet rules) sends marked packets to the **main** routing table. The kill switch accepts the mark explicitly as its first rule.
+
+Two consequences worth knowing:
+
+- **A pool match wins over everything**, including a `block`ed family: on an RU node whose upstream has no IPv6, a user's IPv6 is normally rejected fail-closed — but IPv6 traffic to pooled RU destinations still exits direct. A pool entry is an explicit "go direct" instruction.
+- **Matching is by IP only.** A Russian service fronted by a foreign CDN resolves to non-RU addresses and still takes the tunnel; DNS-based steering is out of scope.
+
+If registering a session's bypass membership fails on connect, the session is **rejected** (same fail-closed stance as the gateway rules).
+
+### Updating pools at runtime
+
+```bash
+docker exec <container> bypass-reload          # reload every pool
+docker exec <container> bypass-reload ru       # reload one pool
+```
+
+Each pool is swapped in a single atomic nft transaction — lookups never see a half-loaded pool and connected sessions are untouched. A non-empty file with no valid entries keeps the pool's previous contents (protection against a truncated download or an editor accident); an empty file legitimately empties the pool; a missing file is an empty pool until it appears, so external producers can start publishing later.
+
+Set **`VPN_BYPASS_WATCH=1`** to run the reload automatically whenever a list file changes. Producers should publish atomically — write `ru.list.tmp`, then `mv` it over `ru.list` — so a reload never reads a half-written file.
+
+Inspect the live state:
+
+```bash
+docker exec <container> nft list table inet ocserv_bypass   # pools + subscribed sessions
+docker exec <container> ip rule                             # the fwmark rule at prio 800
+```
+
 ## Upstream requirements (NordVPN example)
 
 The upstream must forward the Docker subnet out its tunnel. The companion [NordVPN image](https://github.com/azinchen/nordvpn) does this with `FORWARD_FROM`:
