@@ -57,12 +57,13 @@ Logs go to the container's stdout/stderr, so `docker logs` shows everything.
 
 ### Optional watcher services
 
-Five longruns stay in the service bundle unconditionally but **idle** (`sleep infinity`) unless their feature is switched on, so they add nothing when unused:
+Six longruns stay in the service bundle unconditionally but **idle** (`sleep infinity`) unless their feature is switched on, so they add nothing when unused:
 
 - **svc-cert-watch** — when `CERT_WATCH=1`, watches the `server-cert`/`server-key` files from `ocserv.conf` (via `inotifyd`) and runs `cert-reload` on change, which sends ocserv a `SIGHUP`. ocserv re-reads the certificate without dropping connected clients. See [[Reverse Proxy and Certificates]].
 - **svc-cert-poll** — the polling fallback for the above: when `CERT_WATCH_INTERVAL>0`, re-stats the same cert files every N seconds and reloads on an mtime/size change, for filesystems where `inotify` can't see the write (e.g. NFS).
 - **svc-vpngw-watch** — when `VPN_USER_GATEWAY_WATCH=1`, re-runs `vpngw-reload` when `VPN_USER_GATEWAY_FILE` changes.
 - **svc-bypass-watch** — when `VPN_BYPASS_WATCH=1`, re-runs `bypass-reload` when a destination-bypass pool list in `VPN_BYPASS_POOLS_DIR` changes (see [Gateway Mode#destination-bypass-pools](Gateway-Mode#destination-bypass-pools)).
+- **svc-bypass-fetch** — when `VPN_BYPASS_UPDATE_INTERVAL>0`, downloads the bypass pool lists from `VPN_BYPASS_SOURCES_FILE` on that interval (and at startup for pools with no published list), publishing atomically and hot-reloading on change (see [Gateway Mode#fetching-lists-automatically](Gateway-Mode#fetching-lists-automatically)).
 - **svc-vpngw-gw-resolve** — when `VPN_GATEWAYS_RESOLVE_INTERVAL>0`, periodically re-resolves DNS-named gateways. Both are covered in [[Gateway Mode]].
 
 ## Configuration knobs are centralized
