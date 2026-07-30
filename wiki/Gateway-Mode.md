@@ -277,6 +277,37 @@ docker exec <container> nft list table inet ocserv_bypass   # pools + subscribed
 docker exec <container> ip rule                             # the fwmark rule at prio 800
 ```
 
+### Fetching lists automatically
+
+You can populate the pool files yourself (any external process, published atomically as above) — or let the container do it. Point **`VPN_BYPASS_SOURCES_FILE`** at a file of download sources and set **`VPN_BYPASS_UPDATE_INTERVAL`**:
+
+```yaml
+environment:
+  - VPN_BYPASS_SOURCES_FILE=/etc/ocserv/pools/sources.conf
+  - VPN_BYPASS_UPDATE_INTERVAL=86400        # daily; country allocations change slowly
+```
+
+```
+# /etc/ocserv/pools/sources.conf — "<pool> <url-or-path>", several lines per pool merge
+ru https://www.ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone
+ru https://www.ipdeny.com/ipv6/ipaddresses/aggregated/ru-aggregated.zone
+```
+
+Sources must serve **plain CIDR-per-line** text (ipdeny.com zone files, country-ip-blocks dumps, antifilter lists, or your own aggregator's output). Per run, each source is fetched, validated with the same strict classifier as the loader, and the survivors are merged and deduplicated; the result is published atomically and hot-reloaded only when it actually changed. Robustness rules:
+
+- a source that can't be fetched — or yields not a single valid CIDR (an HTML error page, a truncated download) — is **ignored with a warning**; the pool is built from the remaining sources;
+- if **every** source of a pool fails, the published list is left untouched (last-known-good);
+- published lists live on the volume, so restarts work offline; at startup only pools with **no published list yet** are fetched immediately (a first boot with an empty volume comes up populated), existing lists are trusted until the interval elapses.
+
+Force a refresh any time:
+
+```bash
+docker exec <container> bypass-fetch        # every pool with sources
+docker exec <container> bypass-fetch ru     # one pool
+```
+
+`VPN_BYPASS_WATCH` is not needed for the fetcher (it reloads what it publishes) — use the watcher when an *external* process writes the lists.
+
 ## Upstream requirements (NordVPN example)
 
 The upstream must forward the Docker subnet out its tunnel. The companion [NordVPN image](https://github.com/azinchen/nordvpn) does this with `FORWARD_FROM`:
