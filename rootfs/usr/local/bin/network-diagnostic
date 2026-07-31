@@ -232,6 +232,16 @@ occtl_show() {
     printf '%s\n' "$_oc"
 }
 
+# "assigned-vpn-ip client-public-ip" pairs from occtl's user table. Column
+# positions are taken from the header line (the row starting with "id"), so a
+# reordered layout in a future occtl still parses; unparseable output just
+# yields no pairs and the caller falls back to "-".
+occtl_users_map() {
+    occtl show users 2>/dev/null | awk '
+        $1 == "id" { for (i = 1; i <= NF; i++) { if ($i == "ip") ipc = i; if ($i == "vpn-ip") vc = i }; next }
+        ipc && vc && $1 ~ /^[0-9]+$/ && NF >= vc { print $vc, $ipc }'
+}
+
 section "occtl show status"
 occtl_show show status
 echo
@@ -378,14 +388,22 @@ section "Connected sessions"
 occtl_show show users
 if [ -d "$vpngw_state_dir/sessions" ]; then
     echo
-    echo "session records (user gateway ipv4 ipv6 bypass):"
+    echo "clients:"
+    printf '%-18s %-24s %-18s %-10s %s\n' "user" "assigned IP" "client IP" "gateway" "bypass"
+    OCCTL_MAP="$(occtl_users_map)"
     _found=0
     for _rec in "$vpngw_state_dir"/sessions/*; do
         [ -f "$_rec" ] || continue
+        read -r _u _g _ip4 _ip6 _bp < "$_rec" || continue
         _found=1
-        cat "$_rec"
+        _pub="$(printf '%s\n' "$OCCTL_MAP" | awk -v v="$_ip4" '$1 == v { print $2; exit }')"
+        _int="$_ip4"
+        [ "${_ip6:--}" != "-" ] && _int="$_ip4,$_ip6"
+        _bpp=""
+        [ "${_bp:--}" != "-" ] && _bpp="$(pools_with_targets "$(printf '%s' "$_bp" | tr '+' ' ')")"
+        printf '%-18s %-24s %-18s %-10s %s\n' "$_u" "$_int" "${_pub:--}" "$_g" "$_bpp"
     done
-    [ "$_found" = 1 ] || echo "(none)"
+    [ "$_found" = 1 ] || echo "(none connected)"
 fi
 echo
 
