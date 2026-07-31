@@ -224,8 +224,16 @@ echo "Server status             : $SERVER_STATE"
 echo "Connected clients         : $CONNECTED"
 echo
 
+# occtl pages its output when stdout is a TTY (docker exec -t / compose exec),
+# taking over the screen mid-report. Capturing into a variable makes occtl's
+# stdout a pipe, which disables the pager deterministically.
+occtl_show() {
+    _oc="$(occtl "$@" 2>&1)" || { echo "[info] occtl unavailable (is ocserv running?)"; return 0; }
+    printf '%s\n' "$_oc"
+}
+
 section "occtl show status"
-occtl show status 2>&1 || echo "[info] occtl unavailable (is ocserv running?)"
+occtl_show show status
 echo
 
 section "Listening sockets"
@@ -367,7 +375,7 @@ fi
 # ---- Connected sessions -----------------------------------------------------
 
 section "Connected sessions"
-occtl show users 2>/dev/null || echo "[info] occtl unavailable"
+occtl_show show users
 if [ -d "$vpngw_state_dir/sessions" ]; then
     echo
     echo "session records (user gateway ipv4 ipv6 bypass):"
@@ -419,8 +427,11 @@ section "Routing tables"
 echo "main:"
 ip route show 2>/dev/null | sed 's/^/  /'
 if [ "$GW_ACTIVE" = 1 ]; then
-    echo "table $vpn_gateway_table (default gateway):"
-    ip route show table "$vpn_gateway_table" 2>/dev/null | sed 's/^/  /' || true
+    # Table 100 only exists when a subnet default gateway is routed
+    if [ "${SUB4:--}" != "-" ] || { [ "${SUB6:--}" != "-" ] && [ "${SUB6:-}" != "block" ] && [ "${SUB6:-}" != "direct" ]; }; then
+        echo "table $vpn_gateway_table (default gateway):"
+        ip route show table "$vpn_gateway_table" 2>/dev/null | sed 's/^/  /' || true
+    fi
     if [ -f "$vpngw_state_dir/gateways" ]; then
         while read -r _name _tbl _ _; do
             [ -n "$_name" ] || continue
