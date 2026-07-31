@@ -271,6 +271,14 @@ services:
 
 ## Verify
 
+The quickest check is the built-in diagnostic — it probes egress **through every gateway table** and prints the public IP each one exits with, plus the kill-switch and routing state:
+
+```bash
+docker exec ocserv-server network-diagnostic
+```
+
+Or inspect the pieces by hand:
+
 ```bash
 # policy routing on ocserv
 docker exec ocserv-server ip rule

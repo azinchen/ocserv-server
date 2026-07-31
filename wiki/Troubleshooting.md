@@ -3,11 +3,14 @@
 ## First moves
 
 ```bash
+docker exec ocserv-server network-diagnostic      # one-shot full health report
 docker logs ocserv-server                         # startup + ocserv messages
 docker exec ocserv-server occtl show status       # is ocserv online?
 docker exec ocserv-server occtl show users        # who's connected
 docker exec ocserv-server nft list table inet ocserv   # NAT rules present?
 ```
+
+`network-diagnostic` covers most of this page in one run: server status, config sanity (including the `VPN_SUBNET` ↔ `ipv4-network` match), gateway state with **live egress probes through every gateway table** (public IP as seen through each), per-user gateway/bypass maps, connected sessions, bypass pool load state, policy rules, routing tables and the nft tables — with `[ok]`/`[warn]` verdicts at the end. `network-diagnostic --basic` prints a one-line summary per egress path.
 
 ---
 
