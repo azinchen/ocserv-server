@@ -10,7 +10,16 @@ docker exec ocserv-server occtl show users        # who's connected
 docker exec ocserv-server nft list table inet ocserv   # NAT rules present?
 ```
 
-`network-diagnostic` covers most of this page in one run: server status, config sanity (including the `VPN_SUBNET` ↔ `ipv4-network` match), gateway state with **live egress probes through every gateway table** (public IP as seen through each), per-user gateway/bypass maps, connected sessions, bypass pool load state, policy rules, routing tables and the nft tables — with `[ok]`/`[warn]` verdicts at the end. `network-diagnostic --basic` prints a one-line summary per egress path.
+`network-diagnostic` covers most of this page in one run: server status, config sanity (including the `VPN_SUBNET` ↔ `ipv4-network` match), **certificate state** (self-signed vs CA-signed, expiry), a **camouflage self-test**, gateway state with DNS-name staleness checks and **live egress probes through every gateway table and bypass target** (public IP as seen through each), per-user maps, connected sessions with **live RX/TX counters** and a per-session consistency audit, bypass pool load state and freshness, policy rules, routing tables and the nft tables — with `[ok]`/`[warn]` verdicts and a **non-zero exit status when anything warned** (usable in scripts/healthchecks). Other modes:
+
+```bash
+docker exec ocserv-server network-diagnostic --basic            # one line per egress path
+docker exec ocserv-server network-diagnostic --json             # machine-readable summary
+docker exec ocserv-server network-diagnostic --explain alice 5.255.192.10
+# -> "5.255.192.10 matches pool 'ru' (5.255.192.0/18) -> target direct: exits via the main table (ISP), ..."
+```
+
+`--explain USER DEST-IP` answers the most common question — *which path does this user's traffic to this destination take* — by checking their bypass pools in matching order, then their gateway.
 
 ---
 

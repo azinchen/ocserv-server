@@ -176,7 +176,7 @@ Check the **[Troubleshooting][wiki-troubleshoot]** and **[FAQ][wiki-faq]** wiki 
 docker exec ocserv-server network-diagnostic
 ```
 
-It prints server status, config sanity checks, gateway/bypass state with live egress probes (public IP through each gateway), connected sessions, routing and firewall state, and `[ok]`/`[warn]` verdicts.
+It prints server status, config sanity checks, certificate state (issuer + expiry), a camouflage self-test, gateway/bypass state with live egress probes (public IP through each gateway and bypass target), connected sessions with live traffic counters, routing and firewall state, and `[ok]`/`[warn]` verdicts (non-zero exit on warnings). `--explain <user> <ip>` tells you which path a destination takes; `--json` emits a machine-readable summary.
 
 ## License
 
