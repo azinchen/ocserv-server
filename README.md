@@ -1,21 +1,41 @@
 # OpenConnect VPN Server Docker Container
 
 [![GitHub release][github-release]][github-releases]
-[![Build][github-build]][github-actions]
+[![GitHub release date][github-releasedate]][github-releases]
+[![GitHub build][github-build]][github-actions]<br>
 [![GitHub stars][github-stars]][github-link]
 [![GitHub forks][github-forks]][github-link]
 [![Open issues][github-issues]][github-issues-link]
-[![Last commit][github-lastcommit]][github-link]<br>
+[![GitHub last commit][github-lastcommit]][github-link]<br>
 [![Docker pulls][dockerhub-pulls]][dockerhub-link]
 [![Docker stars][dockerhub-stars]][dockerhub-link]
-[![Docker image size][dockerhub-size]][dockerhub-link]
+[![Docker image size][dockerhub-size]][dockerhub-link]<br>
 [![Multi-arch][multiarch-badge]][dockerhub-link]
 
-OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a Docker container with s6-overlay. Builds ocserv from source on Alpine, sets up NAT/forwarding automatically with nftables, and supports camouflage mode to hide the VPN as ordinary HTTPS.
+OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a small self-configuring Docker container: it builds ocserv from source on Alpine, sets up NAT/forwarding automatically with nftables, and can disguise itself as an ordinary HTTPS website.
 
-📖 **Full documentation is in the [Wiki](https://github.com/azinchen/ocserv-server/wiki).**
+> **Chaining through a commercial VPN?** The companion images [**azinchen/nordvpn**](https://github.com/azinchen/nordvpn) (OpenVPN) and [**azinchen/nordvpn-wg**](https://github.com/azinchen/nordvpn-wg) (WireGuard) plug straight into this server's gateway mode — your clients connect to your OpenConnect server and exit with NordVPN's IP.
 
-## Quick start
+## ✨ Key Features
+
+- **🔐 OpenConnect / AnyConnect protocol** — works with the `openconnect` client, Cisco AnyConnect apps, and routers such as Keenetic / Netcraze ([details][wiki-clients])
+- **🚀 Self-configuring networking** — NAT, forwarding and MSS clamping set up automatically with nftables; just mount a config and go ([details][wiki-network])
+- **🕵️ Camouflage mode** — to probes and DPI the server looks like an ordinary HTTPS website; only clients that know the secret reach the VPN ([details][wiki-camo])
+- **🚪 Gateway mode** — route clients out through upstream VPN containers (e.g. NordVPN) instead of the host's connection ([details][wiki-gateway])
+- **👥 Per-user routing** — map each user to a different upstream exit; sessions steered on connect, no static IPs needed ([details][wiki-peruser])
+- **🎯 Destination bypass** — route by *destination*: country pools go direct, chosen services out a specific exit, ad/malware pools blocked ([details][wiki-bypass])
+- **📥 Auto-fetched IP lists** — country CIDR lists downloaded on a schedule, validated, and swapped in atomically ([details][wiki-fetch])
+- **🛡️ Fail-closed kill switch** — nftables next-hop guards on every routed path: if an upstream is down, clients lose internet rather than leak ([details][wiki-killswitch])
+- **🔄 Hot-reload everything** — user maps, pool lists, DNS-named gateway addresses and TLS certificates all reload live, without dropping sessions ([details][wiki-reload])
+- **🔒 Reverse-proxy & Let's Encrypt friendly** — share SWAG's certificates; renewals are picked up without a restart ([details][wiki-certs])
+- **📵 IPv6 without leaks** — optional NAT66; when an upstream has no IPv6, client IPv6 is rejected fail-closed instead of escaping ([details][wiki-ipv6])
+- **📦 Multi-arch, from source** — amd64 / arm64 / riscv64 images, ocserv built from source, supervised by s6-overlay
+
+> **📖 [Full documentation on the Wiki][wiki-home]** — setup guides, ready-to-use configurations, feature guides, troubleshooting, FAQ, and architecture.
+
+---
+
+## Quick Start
 
 ```yaml
 # docker-compose.yml
@@ -46,12 +66,9 @@ docker exec -it ocserv-server ocpasswd -c /etc/ocserv/ocpasswd alice
 sudo openconnect https://vpn.example.com --user=alice
 ```
 
-You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-use configurations are on the wiki:
-[Basic](https://github.com/azinchen/ocserv-server/wiki/ocserv-Configuration-Basic) ·
-[Self-Signed](https://github.com/azinchen/ocserv-server/wiki/ocserv-Configuration-Self-Signed) ·
-[SWAG / Let's Encrypt](https://github.com/azinchen/ocserv-server/wiki/ocserv-Configuration-SWAG-Integration)
+You provide an `ocserv.conf` and a certificate in the config volume — ready-to-use configurations are on the wiki: [Basic][wiki-conf-basic] · [Self-Signed][wiki-conf-selfsigned] · [SWAG / Let's Encrypt][wiki-conf-swag]. Start with **[Getting Started][wiki-start]**.
 
-## Requirements
+### Requirements
 
 | Setting | Why |
 |---|---|
@@ -59,56 +76,87 @@ You provide an `ocserv.conf` and a certificate in the config volume. Ready-to-us
 | `--device /dev/net/tun` | create the tunnel device |
 | `--sysctl net.ipv4.ip_forward=1` | forward client traffic to the internet |
 
-## Key environment variables
+## Common Setups
+
+| I want to… | Guide |
+|---|---|
+| Run a plain standalone VPN server | [Getting Started][wiki-start] · [Basic config][wiki-conf-basic] |
+| Share port 443 with websites behind SWAG | [SWAG integration][wiki-conf-swag] |
+| Hide the VPN from DPI / censorship | [Camouflage Mode][wiki-camo] |
+| Send clients out through NordVPN (or another VPN container) | [Gateway Mode][wiki-gateway] |
+| Give each user a different exit country | [Per-user gateways][wiki-peruser] |
+| Route by destination (country direct, streaming via US, ads blocked) | [Destination Bypass][wiki-bypass] |
+| Connect phones, laptops, routers | [Clients and Devices][wiki-clients] |
+
+For example, chaining every client out through a NordVPN container is just:
+
+```yaml
+    environment:
+      - VPN_SUBNET=10.20.0.0/24
+      - VPN_GATEWAY=172.28.0.2        # the nordvpn container, kill switch included
+```
+
+## Environment Variables
+
+Grouped by feature; every variable is one line here — the **[Configuration Reference][wiki-config]** has the full descriptions.
+
+### Core networking
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `VPN_SUBNET` | `10.10.10.0/24` | VPN client subnet (must match `ipv4-network` in `ocserv.conf`) |
-| `WAN_IF` | _(auto)_ | WAN interface for NAT. Auto-detected from the container's default route (falls back to `eth0`); set explicitly to override |
-| `IPV6_NAT` | `0` | enable IPv6 masquerade (see the IPv6 notes on the wiki) |
-| `MSS` | _(unset)_ | Clamp the client TCP (CSTP) MSS (only ever lowered - a client that advertised less keeps its value). Unset clamps to each interface's MTU (a no-op on plain 1500 links). Set a number (e.g. `1300`) to force a hard cap when the path to clients has a smaller MTU than the local interface and PMTUD is broken - e.g. a macvlan reaching a VPS peer, PPPoE, or tunnelled uplinks - where full-size segments would otherwise be silently dropped and the tunnel would carry no data |
-| `VPN_GATEWAY` | _(unset)_ | Default IPv4 egress for **unmapped** users. An **IP or DNS name** routes the client subnet out through that upstream gateway container (e.g. a NordVPN container with `FORWARD_FROM`) via source-based policy routing, with a fail-closed nft kill switch (`inet ocserv_gw`); the gateway may sit on a different interface than `WAN_IF` (its egress gets its own masquerade automatically). `direct` (or unset) = exit via the ISP. `block` = reject their IPv4 (fail-closed). |
-| `VPN_GATEWAY6` | _(unset)_ | Default IPv6 egress for unmapped users. An **IP or DNS name** policy-routes the IPv6 client subnet to it; `direct` = exit via the ISP; `block` (or unset) = reject their forwarded IPv6 to prevent leaks. |
-| `VPN_GATEWAY_TABLE` | `100` | Routing table used for gateway mode. |
-| `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the `from <VPN_SUBNET>` policy rule. |
-| `VPN_GATEWAYS` | _(unset)_ | Named upstream gateways for per-user routing, e.g. `nl=172.28.0.2,us=172.28.0.4`. An address may be an IP or a DNS name. Names may use letters, digits, `_` and `-` (must not start with `-`). Each gateway gets its own routing table and kill-switch set. |
-| `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 address (or DNS name) per gateway name, e.g. `nl=fd00::2`. A name without one has its users' forwarded IPv6 dropped (fail-closed). |
-| `VPN_GATEWAYS_FILE` | _(unset)_ | Path to a file defining named gateways, one `name ipv4 [ipv6]` per line (`#` comments allowed) — an alternative to `VPN_GATEWAYS` + `VPN_GATEWAYS6`. The IPv6 address is the optional 3rd column; both families live in the one file. Each address may be an **IP, a DNS name** (e.g. the upstream sidecar's Docker service name), or `block` to block that family for the gateway's users — its packets are rejected (ICMP admin-prohibited) so the client fails fast, no leak (e.g. `nordvpn 172.28.0.33 block`, or `lan6 block 2001:db8::9` for an IPv6-only gateway). Merged with the env vars (file wins per field). The set of gateway **names** is read at **startup** (gateway definitions are not hot-reloaded); their **addresses** are re-resolved live when `VPN_GATEWAYS_RESOLVE_INTERVAL` is set. |
-| `VPN_GATEWAYS_RESOLVE_INTERVAL` | `0` | Seconds between re-resolving DNS-named gateways. `0` disables it. When positive, `svc-vpngw-gw-resolve` periodically re-resolves every DNS-named gateway (named gateways and `VPN_GATEWAY`/`VPN_GATEWAY6`); if a next-hop address moved (e.g. the upstream sidecar restarted with a new IP) it updates that routing table's default route and rebuilds the kill switch **in place** — connected clients keep their sessions, no reconnect. A name that fails to resolve keeps its last-known-good address. Run `docker exec <container> vpngw-gw-resolve` to force one pass. Only addresses are re-resolved; adding/removing gateway names still needs a restart. |
-| `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway name map, e.g. `user1=nl,user2=us`. Unmapped users follow `VPN_GATEWAY` (or the default route if unset); the reserved name `direct` sends a user out the container's default route (the ISP) even when `VPN_GATEWAY` is set. `VPN_GATEWAY=direct` is accepted as an explicit "no default gateway". |
-| `VPN_USER_GATEWAY_FILE` | _(unset)_ | Path to a mapping file (one `user gateway` per line; `#` comments allowed) — an alternative to a large `VPN_USER_GATEWAY` value. Merged with it (file wins on conflict). Edit and run `docker exec <container> vpngw-reload` to apply changes to live sessions without a restart. See [Gateway Mode](Gateway-Mode#hot-reloading-the-user-map). |
-| `VPN_USER_GATEWAY_WATCH` | `0` | Set to `1` to auto-run `vpngw-reload` whenever `VPN_USER_GATEWAY_FILE` changes (no manual command needed). |
-| `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of the per-user policy rules (must be lower than `VPN_GATEWAY_RULE_PRIO` to win). |
-| `VPN_BYPASS_POOLS_DIR` | `/etc/ocserv/pools` | Directory of destination **bypass pools**: `<name>.list` files of IPs/CIDRs (IPv4 and IPv6 mixed, `#` comments). Traffic from a bypassing client to a pooled destination escapes the client's gateway and goes to the pool's **target** (`VPN_BYPASS_TARGETS`; default **direct** via the container's default route) — e.g. a cascade node in Russia sending RU-bound traffic straight out while everything else takes the upstream tunnel. Pools reload atomically at runtime with `docker exec <container> bypass-reload` (live sessions unaffected); a missing list file is an empty pool until it appears. See [Gateway Mode](https://github.com/azinchen/ocserv-server/wiki/Gateway-Mode#destination-bypass-pools). |
-| `VPN_BYPASS_TARGETS` | _(unset)_ | Where each pool's matched traffic goes: `pool=target` pairs, e.g. `ru=direct,streaming=us,ads=block`. A target is `direct` (the default for unlisted pools — the container's default route), the name of a `VPN_GATEWAYS` gateway (matched traffic takes **that** gateway instead of the client's own; only the families the gateway routes — a `block`ed family is rejected), or `block`/`drop` (matched destinations are rejected with ICMP admin-prohibited — a destination blocklist). Unknown targets or targets for unattached pools fail startup. |
-| `VPN_GATEWAY_BYPASS` | _(unset)_ | Pool(s) for **unmapped** users behind `VPN_GATEWAY`, e.g. `ru` (join several with `+`: `ru+corp`). |
-| `VPN_GATEWAYS_BYPASS` | _(unset)_ | Pools per **named gateway**, e.g. `nl=ru,us=ru+corp` — inherited by every user mapped to that gateway. |
-| `VPN_USER_BYPASS` | _(unset)_ | Pools per **user**, e.g. `user1=ru,user2=ru+corp` — the strongest attachment; the reserved value `none` opts a user out of any inherited bypass. Requires the per-user hook (`VPN_USER_GATEWAY` or `VPN_USER_GATEWAY_FILE`, which may be an empty file). |
-| `VPN_USER_BYPASS_FILE` | _(unset)_ | File alternative to `VPN_USER_BYPASS` (one `user pools` per line; merged, file wins). Edit and run `docker exec <container> vpngw-reload` to apply to live sessions without a restart (the pool *set* stays fixed at startup). |
-| `VPN_USER_BYPASS_WATCH` | `0` | Set to `1` to auto-run `vpngw-reload` whenever `VPN_USER_BYPASS_FILE` changes (no manual command needed) — the bypass twin of `VPN_USER_GATEWAY_WATCH`. |
-| `VPN_BYPASS_WATCH` | `0` | Set to `1` to auto-run `bypass-reload` whenever a list file in `VPN_BYPASS_POOLS_DIR` changes — publish lists atomically (write `.tmp`, then `mv`). |
-| `VPN_BYPASS_SOURCES_FILE` | _(unset)_ | File of bypass-pool download sources, one `pool url` per line (several lines per pool merge; plain CIDR-per-line sources such as ipdeny.com zone files). `docker exec <container> bypass-fetch` fetches, validates and publishes them atomically into `VPN_BYPASS_POOLS_DIR`, then hot-reloads. A failed or garbage source is ignored; if every source of a pool fails, the published list is kept (last-known-good). |
-| `VPN_BYPASS_UPDATE_INTERVAL` | `0` | Seconds between automatic `bypass-fetch` runs (`0` = off). Pools with no published list yet are fetched at startup, so a first boot with an empty volume comes up populated. |
-| `VPN_BYPASS_RULE_PRIO` | `800` | Priority of the bypass fwmark policy rules (must be lower than `VPN_GATEWAY_USER_RULE_PRIO` to win). |
-| `VPN_BYPASS_MARK` | `0xbc` | Base fwmark used to steer bypassed packets: `direct` traffic uses it as-is, every other distinct `VPN_BYPASS_TARGETS` target gets base+1, base+2… Change it only if something else in your setup uses these mark values. |
-| `CERT_WATCH` | `0` | Set to `1` to watch the TLS certificate files listed in `ocserv.conf` (`server-cert`/`server-key`) and, when one changes (e.g. a Let's Encrypt renewal), send ocserv a `SIGHUP` so it reloads the new certificate **without a restart** — connected clients keep their sessions and new connections use the new cert. Run `docker exec <container> cert-reload` to force a reload. See [Reverse Proxy and Certificates](https://github.com/azinchen/ocserv-server/wiki/Reverse-Proxy-and-Certificates#certificate-renewal). |
-| `CERT_WATCH_INTERVAL` | `0` | Polling fallback for `CERT_WATCH`, in seconds (`0` = off). Instead of `inotify`, re-checks the cert files' mtime/size every N seconds and reloads ocserv on change. Use it where inotify can't see the change — e.g. an **NFS-backed** cert directory. Symlinks are followed, so a certbot `live`→`archive` re-link is detected. Use `CERT_WATCH=1` for local/bind-mounted dirs; `CERT_WATCH_INTERVAL` otherwise. |
+|---|---|---|
+| `VPN_SUBNET` | `10.10.10.0/24` | VPN client subnet; must match `ipv4-network` in `ocserv.conf`. |
+| `WAN_IF` | _(auto)_ | NAT egress interface; auto-detected from the default route. |
+| `VPN_IF` | `vpns+` | Tunnel device pattern; matches `device = vpns` in `ocserv.conf`. |
+| `MSS` | _(unset)_ | Clamp client TCP MSS (e.g. `1300`) when the client path MTU is small and PMTUD is broken. |
 
-Full reference: [Configuration Reference](https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference).
+### IPv6
 
-## Route clients through another VPN (gateway mode)
+| Variable | Default | Description |
+|---|---|---|
+| `IPV6_FORWARD` | `1` | Enable IPv6 forwarding inside the container. |
+| `IPV6_NAT` | `0` | Enable IPv6 masquerade (NAT66) for `IPV6_SUBNET` — see the wiki before turning on. |
+| `IPV6_SUBNET` | `fda9:…::/64` | ULA subnet to masquerade when `IPV6_NAT=1`. |
 
-Set `VPN_GATEWAY` to the IP of an upstream VPN container (for example a
-[NordVPN](https://github.com/azinchen/nordvpn) container running `FORWARD_FROM`)
-and ocserv policy-routes its client subnet out through it — clients exit with the
-upstream's IP. A fail-closed nft kill switch ensures client traffic can only leave
-toward the gateway (no leak if the upstream tunnel drops). Add `VPN_GATEWAY6` to do
-the same for IPv6. See [Gateway Mode](https://github.com/azinchen/ocserv-server/wiki/Gateway-Mode).
+### Gateway mode — [details][wiki-gateway]
 
-Different users can exit through different gateways: define named gateways with
-`VPN_GATEWAYS` and map users to them with `VPN_USER_GATEWAY` (e.g.
-`user1=nl,user2=us`). Rules are installed per session on connect, so no static IP
-assignment is needed, and every path keeps the fail-closed kill switch.
+| Variable | Default | Description |
+|---|---|---|
+| `VPN_GATEWAY` | _(unset)_ | Default IPv4 egress for unmapped users: an upstream's IP/DNS name, `direct` (ISP), or `block`. |
+| `VPN_GATEWAY6` | _(unset)_ | Same for IPv6: IP/DNS name, `direct`, or `block` (default — no IPv6 leak). |
+| `VPN_GATEWAYS` | _(unset)_ | Named gateways for per-user routing, e.g. `nl=172.28.0.2,us=172.28.0.4`. |
+| `VPN_GATEWAYS6` | _(unset)_ | Optional IPv6 per gateway name, e.g. `nl=fd00::2`. |
+| `VPN_GATEWAYS_FILE` | _(unset)_ | Gateways in a file (`name ipv4 [ipv6]`; `block` blocks a family). |
+| `VPN_GATEWAYS_RESOLVE_INTERVAL` | `0` | Re-resolve DNS-named gateways every N seconds; sessions survive address moves. |
+| `VPN_USER_GATEWAY` | _(unset)_ | Username → gateway map, e.g. `alice=nl,bob=us`; `direct` sends a user out the ISP. |
+| `VPN_USER_GATEWAY_FILE` | _(unset)_ | User map in a file; hot-reload with `vpngw-reload`, live sessions re-steered in place. |
+| `VPN_USER_GATEWAY_WATCH` | `0` | `1` = reload the user map automatically on every file change. |
+| `VPN_GATEWAY_TABLE` | `100` | Routing table for gateway mode (advanced). |
+| `VPN_GATEWAY_RULE_PRIO` | `1000` | Priority of the subnet policy rule (advanced). |
+| `VPN_GATEWAY_USER_RULE_PRIO` | `900` | Priority of per-user policy rules (advanced). |
+
+### Destination bypass — [details][wiki-bypass]
+
+| Variable | Default | Description |
+|---|---|---|
+| `VPN_BYPASS_POOLS_DIR` | `/etc/ocserv/pools` | Directory of `<pool>.list` CIDR files (destination pools). |
+| `VPN_GATEWAY_BYPASS` | _(unset)_ | Pool(s) for unmapped users, e.g. `ru` (join with `+`). |
+| `VPN_GATEWAYS_BYPASS` | _(unset)_ | Pools per named gateway, e.g. `nl=ru+ads` — inherited by its users. |
+| `VPN_USER_BYPASS` | _(unset)_ | Pools per user (strongest); `none` opts a user out. |
+| `VPN_USER_BYPASS_FILE` | _(unset)_ | Per-user map in a file; hot-reload with `vpngw-reload`. |
+| `VPN_USER_BYPASS_WATCH` | `0` | `1` = reload the bypass map automatically on every file change. |
+| `VPN_BYPASS_TARGETS` | _(unset)_ | Per-pool target: `ru=direct,streaming=us,ads=block` (default `direct`). |
+| `VPN_BYPASS_WATCH` | `0` | `1` = reload a pool automatically when its list file changes. |
+| `VPN_BYPASS_SOURCES_FILE` | _(unset)_ | Download sources for the built-in list fetcher (`pool url` lines). |
+| `VPN_BYPASS_UPDATE_INTERVAL` | `0` | Auto-fetch the lists every N seconds (e.g. `86400`). |
+| `VPN_BYPASS_RULE_PRIO` | `800` | Priority of the bypass policy rules (advanced). |
+| `VPN_BYPASS_MARK` | `0xbc` | Base fwmark for bypassed traffic (advanced). |
+
+### Certificate hot-reload — [details][wiki-certs]
+
+| Variable | Default | Description |
+|---|---|---|
+| `CERT_WATCH` | `0` | `1` = watch the cert/key files from `ocserv.conf` and reload ocserv on renewal, no restart. |
+| `CERT_WATCH_INTERVAL` | `0` | Polling fallback every N seconds for filesystems without inotify (e.g. NFS). |
 
 ## Build
 
@@ -116,24 +164,57 @@ assignment is needed, and every path keeps the fail-closed kill switch.
 docker build -t ocserv-server .
 ```
 
-- Base: Alpine Linux · Init: s6-overlay · VPN: ocserv (built from source) · Firewall: nftables
+Base: Alpine Linux · Init: s6-overlay · VPN: ocserv (built from source) · Firewall: nftables
+
+## Issues
+
+If you have any problems with or questions about this image, please contact me through a [GitHub issue][github-issues-link] or [email][email-link].
+
+Check the **[Troubleshooting][wiki-troubleshoot]** and **[FAQ][wiki-faq]** wiki pages first.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
-[github-release]: https://img.shields.io/github/v/release/azinchen/ocserv-server
+<!-- Links: GitHub -->
+[github-release]: https://img.shields.io/github/v/release/azinchen/ocserv-server?logo=github&logoColor=white
+[github-releasedate]: https://img.shields.io/github/release-date/azinchen/ocserv-server?logo=github&logoColor=white
 [github-releases]: https://github.com/azinchen/ocserv-server/releases
-[github-build]: https://img.shields.io/github/actions/workflow/status/azinchen/ocserv-server/ci-build-deploy.yml?branch=main&label=build
+[github-build]: https://img.shields.io/github/actions/workflow/status/azinchen/ocserv-server/ci-build-deploy.yml?branch=main&label=build&logo=github&logoColor=white
 [github-actions]: https://github.com/azinchen/ocserv-server/actions/workflows/ci-build-deploy.yml
-[github-stars]: https://img.shields.io/github/stars/azinchen/ocserv-server
-[github-forks]: https://img.shields.io/github/forks/azinchen/ocserv-server
-[github-issues]: https://img.shields.io/github/issues/azinchen/ocserv-server
+[github-stars]: https://img.shields.io/github/stars/azinchen/ocserv-server?style=flat-square&logo=github&logoColor=white
+[github-forks]: https://img.shields.io/github/forks/azinchen/ocserv-server?style=flat-square&logo=github&logoColor=white
+[github-issues]: https://img.shields.io/github/issues/azinchen/ocserv-server?logo=github&logoColor=white
 [github-issues-link]: https://github.com/azinchen/ocserv-server/issues
-[github-lastcommit]: https://img.shields.io/github/last-commit/azinchen/ocserv-server
+[github-lastcommit]: https://img.shields.io/github/last-commit/azinchen/ocserv-server?logo=github&logoColor=white
 [github-link]: https://github.com/azinchen/ocserv-server
-[dockerhub-pulls]: https://img.shields.io/docker/pulls/azinchen/ocserv-server
-[dockerhub-stars]: https://img.shields.io/docker/stars/azinchen/ocserv-server
-[dockerhub-size]: https://img.shields.io/docker/image-size/azinchen/ocserv-server/latest
+
+<!-- Links: Docker Hub -->
+[dockerhub-pulls]: https://img.shields.io/docker/pulls/azinchen/ocserv-server?logo=docker&logoColor=white
+[dockerhub-stars]: https://img.shields.io/docker/stars/azinchen/ocserv-server?logo=docker&logoColor=white
+[dockerhub-size]: https://img.shields.io/docker/image-size/azinchen/ocserv-server/latest?logo=docker&logoColor=white
 [dockerhub-link]: https://hub.docker.com/r/azinchen/ocserv-server
-[multiarch-badge]: https://img.shields.io/badge/arch-amd64%20%7C%20arm64%20%7C%20riscv64-blue
+[multiarch-badge]: https://img.shields.io/badge/multi--arch-amd64%20%7C%20arm64%20%7C%20riscv64-blue?logo=docker&logoColor=white
+
+<!-- Links: Wiki -->
+[wiki-home]: https://github.com/azinchen/ocserv-server/wiki
+[wiki-start]: https://github.com/azinchen/ocserv-server/wiki/Getting-Started
+[wiki-config]: https://github.com/azinchen/ocserv-server/wiki/Configuration-Reference
+[wiki-conf-basic]: https://github.com/azinchen/ocserv-server/wiki/ocserv-Configuration-Basic
+[wiki-conf-selfsigned]: https://github.com/azinchen/ocserv-server/wiki/ocserv-Configuration-Self-Signed
+[wiki-conf-swag]: https://github.com/azinchen/ocserv-server/wiki/ocserv-Configuration-SWAG-Integration
+[wiki-camo]: https://github.com/azinchen/ocserv-server/wiki/Camouflage-Mode
+[wiki-gateway]: https://github.com/azinchen/ocserv-server/wiki/Gateway-Mode
+[wiki-peruser]: https://github.com/azinchen/ocserv-server/wiki/Gateway-Mode#per-user-gateways
+[wiki-killswitch]: https://github.com/azinchen/ocserv-server/wiki/Gateway-Mode#kill-switch-fail-closed
+[wiki-bypass]: https://github.com/azinchen/ocserv-server/wiki/Destination-Bypass
+[wiki-fetch]: https://github.com/azinchen/ocserv-server/wiki/Destination-Bypass#fetching-lists-automatically
+[wiki-reload]: https://github.com/azinchen/ocserv-server/wiki/Gateway-Mode#hot-reloading-the-user-map
+[wiki-network]: https://github.com/azinchen/ocserv-server/wiki/Networking-NAT-and-Routing
+[wiki-ipv6]: https://github.com/azinchen/ocserv-server/wiki/Networking-NAT-and-Routing#ipv6
+[wiki-certs]: https://github.com/azinchen/ocserv-server/wiki/Reverse-Proxy-and-Certificates
+[wiki-clients]: https://github.com/azinchen/ocserv-server/wiki/Clients-and-Devices
+[wiki-troubleshoot]: https://github.com/azinchen/ocserv-server/wiki/Troubleshooting
+[wiki-faq]: https://github.com/azinchen/ocserv-server/wiki/FAQ
+
+[email-link]: mailto:alexander@zinchenko.com

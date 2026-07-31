@@ -215,120 +215,11 @@ To apply on every save automatically, set **`VPN_USER_GATEWAY_WATCH=1`** — a s
 
 > The connect/disconnect hook is installed whenever `VPN_USER_GATEWAY_FILE` is set, even if the file is empty or absent at startup — so you can start with no mappings and add them entirely at runtime. Named gateways themselves (`VPN_GATEWAYS`) are still fixed at startup; the file changes only *which user uses which existing gateway*.
 
-## Destination bypass pools
+## Destination bypass
 
-Gateway mode is source-routed: *who* the client is decides where their traffic exits. Bypass pools add a **destination** dimension: traffic to addresses in a named pool escapes the user's gateway and goes to the pool's **target** — **direct** (the container's default route / ISP, the default), a **named gateway**, or **block** (rejected) — even for users whose everything-else goes to a gateway.
+Gateway mode is source-routed: *who* the client is decides where **all** their traffic exits. **Destination bypass** adds the second dimension: traffic to addresses in a named CIDR **pool** escapes the user's gateway and goes to the pool's **target** — direct (the ISP), a *different* named gateway, or blocked entirely. Pools attach per user, per gateway, or to the default; lists can be fetched and hot-reloaded automatically.
 
-The motivating setup is a **cascade**: the first ocserv node sits in Russia and forwards clients to an upstream node abroad (`VPN_GATEWAY`/`VPN_GATEWAYS`) — but traffic to Russian destinations should leave the first node directly, both for speed and because RU sites often block foreign exit IPs. With an `ru` pool attached, only non-RU traffic takes the upstream tunnel.
-
-### Defining pools
-
-A pool is a file `<name>.list` in **`VPN_BYPASS_POOLS_DIR`** (default `/etc/ocserv/pools`, i.e. under the mounted config volume): one IP or CIDR per line, IPv4 and IPv6 mixed freely, `#` comments allowed. Overlapping and duplicate entries are fine (they are merged on load); invalid lines are skipped with a warning. Country-sized pools (tens of thousands of prefixes) are matched with nftables interval sets — lookups stay fast.
-
-```
-# /etc/ocserv/pools/ru.list
-5.255.192.0/18
-77.88.0.0/18
-2a02:6b8::/32
-...
-```
-
-Pool names follow the gateway-name rules (letters, digits, `_`, `-`); `none` is reserved.
-
-### Attaching pools
-
-Three levels, strongest first — multiple pools join with `+`:
-
-```yaml
-environment:
-  - VPN_USER_BYPASS=alice=ru,tv=ru+corp,guest=none  # per user ("none" opts out of inheritance)
-  - VPN_GATEWAYS_BYPASS=nl=ru                       # per named gateway (all its users inherit)
-  - VPN_GATEWAY_BYPASS=ru                           # unmapped users behind VPN_GATEWAY
-```
-
-A user's pools resolve as: explicit `VPN_USER_BYPASS` entry (`none` = no bypass at all) → their named gateway's `VPN_GATEWAYS_BYPASS` pools → for unmapped users, `VPN_GATEWAY_BYPASS`. `direct` users inherit nothing (they are already direct). Referencing an undefined gateway, an invalid pool name, or attaching per-user bypass without the per-user hook fails startup loudly.
-
-The per-user map can also live in a file (**`VPN_USER_BYPASS_FILE`**), like the gateway user map — and like it, the file is **hot-reloadable**: edit it and run `vpngw-reload` (or set **`VPN_USER_BYPASS_WATCH=1`** to apply on every save), and connected sessions are reconciled **in place** — a user gains/loses their pools without reconnecting. The reload validates the whole map first (an entry naming an unknown pool aborts it, sessions untouched). What stays fixed at startup: the pool *set* itself (each pool's nft sets and marking rules), each pool's *target* (`VPN_BYPASS_TARGETS`), and the env-only attachments (`VPN_GATEWAY_BYPASS`, `VPN_GATEWAYS_BYPASS`); pool *contents* hot-reload separately (below).
-
-### Pool targets
-
-By default a matched destination exits **direct**. **`VPN_BYPASS_TARGETS`** changes where a pool's traffic goes, per pool:
-
-```yaml
-environment:
-  - VPN_GATEWAYS=nl=172.28.0.2,us=172.28.0.4
-  - VPN_USER_GATEWAY=alice=nl
-  - VPN_GATEWAYS_BYPASS=nl=ru+streaming+ads
-  - VPN_BYPASS_TARGETS=streaming=us,ads=block   # ru stays direct (the default)
-```
-
-A target is:
-
-- **`direct`** — the default for every pool not listed: matched traffic exits via the container's default route (the ISP).
-- **A `VPN_GATEWAYS` name** — matched traffic takes *that* gateway instead of the session's own: in the example, Alice's traffic normally exits via `nl`, but streaming destinations go out through `us`. Only the families the target gateway routes apply — a family it `block`s (or an IPv6 it simply doesn't have) is rejected for pool traffic too, fail-closed.
-- **`block`** (alias `drop`) — matched destinations are rejected (ICMP admin-prohibited, so clients fail fast): a destination blocklist, e.g. an `ads` pool.
-
-An unknown target, or a target for a pool that is attached nowhere, fails startup loudly. The target is a property of the *pool* and fixed at startup, like the pool set itself. If a destination is in several of a user's pools with different targets, the **first pool wins** (marking-rule order: pools in the order they are first attached — `VPN_GATEWAY_BYPASS`, then `VPN_GATEWAYS_BYPASS`, then `VPN_USER_BYPASS`).
-
-### How it works
-
-`init-vpngw` builds a dedicated nft table `inet ocserv_bypass`: one interval set per pool plus, per pool, a source set of subscribed session addresses (maintained by the same connect/disconnect hook as the gateway rules). A prerouting chain fwmarks client packets whose destination is in one of their pools with the pool's **target mark** — `VPN_BYPASS_MARK` (default `0xbc`) for `direct`, base+1, base+2… for every other distinct target. Policy rules at priority `VPN_BYPASS_RULE_PRIO` (default `800` — stronger than the `900` per-user and `1000` subnet rules) send each mark to its target's routing table: **main** for `direct`, the gateway's own table for a gateway target, and none at all for `block` — blocked marks are rejected by the kill switch. The kill switch handles all the marks explicitly as its first rules (accept for `direct`, the usual next-hop guard for a gateway target, reject for `block`).
-
-Two consequences worth knowing:
-
-- **A pool match wins over everything**, including a `block`ed family: on an RU node whose upstream has no IPv6, a user's IPv6 is normally rejected fail-closed — but IPv6 traffic to pooled RU destinations still exits direct. A pool entry is an explicit routing instruction (and with a `block` target, the override runs the other way: pooled destinations are rejected even for users whose gateway would route them).
-- **Matching is by IP only.** A Russian service fronted by a foreign CDN resolves to non-RU addresses and still takes the tunnel; DNS-based steering is out of scope.
-
-If registering a session's bypass membership fails on connect, the session is **rejected** (same fail-closed stance as the gateway rules).
-
-### Updating pools at runtime
-
-```bash
-docker exec <container> bypass-reload          # reload every pool
-docker exec <container> bypass-reload ru       # reload one pool
-```
-
-Each pool is swapped in a single atomic nft transaction — lookups never see a half-loaded pool and connected sessions are untouched. A non-empty file with no valid entries keeps the pool's previous contents (protection against a truncated download or an editor accident); an empty file legitimately empties the pool; a missing file is an empty pool until it appears, so external producers can start publishing later.
-
-Set **`VPN_BYPASS_WATCH=1`** to run the reload automatically whenever a list file changes. Producers should publish atomically — write `ru.list.tmp`, then `mv` it over `ru.list` — so a reload never reads a half-written file.
-
-Inspect the live state:
-
-```bash
-docker exec <container> nft list table inet ocserv_bypass   # pools + subscribed sessions
-docker exec <container> ip rule                             # the fwmark rules at prio 800
-```
-
-### Fetching lists automatically
-
-You can populate the pool files yourself (any external process, published atomically as above) — or let the container do it. Point **`VPN_BYPASS_SOURCES_FILE`** at a file of download sources and set **`VPN_BYPASS_UPDATE_INTERVAL`**:
-
-```yaml
-environment:
-  - VPN_BYPASS_SOURCES_FILE=/etc/ocserv/pools/sources.conf
-  - VPN_BYPASS_UPDATE_INTERVAL=86400        # daily; country allocations change slowly
-```
-
-```
-# /etc/ocserv/pools/sources.conf — "<pool> <url-or-path>", several lines per pool merge
-ru https://www.ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone
-ru https://www.ipdeny.com/ipv6/ipaddresses/aggregated/ru-aggregated.zone
-```
-
-Sources must serve **plain CIDR-per-line** text (ipdeny.com zone files, country-ip-blocks dumps, antifilter lists, or your own aggregator's output). Per run, each source is fetched, validated with the same strict classifier as the loader, and the survivors are merged and deduplicated; the result is published atomically and hot-reloaded only when it actually changed. Robustness rules:
-
-- a source that can't be fetched — or yields not a single valid CIDR (an HTML error page, a truncated download) — is **ignored with a warning**; the pool is built from the remaining sources;
-- if **every** source of a pool fails, the published list is left untouched (last-known-good);
-- published lists live on the volume, so restarts work offline; at startup only pools with **no published list yet** are fetched immediately (a first boot with an empty volume comes up populated), existing lists are trusted until the interval elapses.
-
-Force a refresh any time:
-
-```bash
-docker exec <container> bypass-fetch        # every pool with sources
-docker exec <container> bypass-fetch ru     # one pool
-```
-
-`VPN_BYPASS_WATCH` is not needed for the fetcher (it reloads what it publishes) — use the watcher when an *external* process writes the lists.
+It has its own page: **[[Destination Bypass]]**.
 
 ## Upstream requirements (NordVPN example)
 
@@ -399,4 +290,4 @@ docker exec ocserv-server nft list table inet ocserv_gw  # session IPs inside th
 
 ---
 
-Next: **[[Networking NAT and Routing]]** · **[[Troubleshooting]]**
+Next: **[[Destination Bypass]]** · **[[Networking NAT and Routing]]** · **[[Troubleshooting]]**
