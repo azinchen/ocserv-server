@@ -4,25 +4,32 @@
 # network-diagnostic: POSIX sh diagnostics for the ocserv-server container.
 # Modelled on the nordvpn-wg sibling image's tool of the same name.
 #
-# Usage: network-diagnostic [--basic|-b] | [--full|-f] | [--help|-h]
+# Usage: network-diagnostic [--basic|-b] | [--full|-f] | [--json|-j]
+#                           | [--explain|-e USER DEST-IP] | [--help|-h]
 # Default mode is --full.
 #
-# Shows: server status, effective configuration, gateway/bypass state and
-# per-user maps, connected sessions, per-gateway egress probes (public IP as
-# seen through each gateway), destination-bypass pool state, policy routing
-# and the nftables tables.
+# Shows: server status, effective configuration, certificate state, gateway/
+# bypass state and per-user maps, connected sessions with live traffic
+# counters, per-gateway and per-bypass-target egress probes (public IP as seen
+# through each path), destination-bypass pool state and freshness, policy
+# routing and the nftables tables. Exit status is non-zero when any [warn]
+# was raised, so the tool can back a healthcheck or script.
 #
 # Egress probes: locally generated test traffic to $TEST4:443 is fwmarked in a
-# temporary route-type output chain (table inet ocserv_diag, mark $DIAG_MARK),
-# masqueraded by mark, and steered with an "fwmark -> <table>" policy rule at
-# priority $DIAG_RULE_PRIO (stronger than every vpngw rule). That exercises the
-# same routing table and egress path client traffic uses, without touching any
-# live rule; everything is removed on exit. Forwarded (client) traffic is never
-# marked - the chain hooks output only.
+# temporary route-type output chain (table inet ocserv_diag), masqueraded by
+# mark (only for the probe destination), and either steered with an
+# "fwmark -> <table>" policy rule at priority $DIAG_RULE_PRIO (gateway-table
+# probes) or left to the LIVE prio-800 bypass fwmark rules (bypass-target
+# probes, using the pool's own mark). That exercises the same routing tables
+# and egress path client traffic uses, without touching any live rule;
+# everything is removed on exit. Forwarded (client) traffic is never marked -
+# the chain hooks output only.
 
 set -u
 
 MODE="full"
+EXPLAIN_USER=""
+EXPLAIN_DEST=""
 
 print_usage()
 {
@@ -30,9 +37,15 @@ print_usage()
 Usage: network-diagnostic [options]
 
 Options:
-    -b, --basic   One-line summary: server state, clients, egress public IPs
-    -f, --full    Full diagnostics (default)
-    -h, --help    Show this help
+    -b, --basic            One-line summary: server state, clients, egress IPs
+    -f, --full             Full diagnostics (default)
+    -j, --json             Machine-readable summary (server, gateways, clients,
+                           pools, certificates, probe results)
+    -e, --explain USER IP  Explain which path USER's traffic to IP takes
+                           (bypass pool -> target, or their gateway)
+    -h, --help             Show this help
+
+Exit status: 0 when no [warn] was raised, 1 otherwise.
 EOF
 }
 
@@ -40,7 +53,18 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         -b|--basic) MODE="basic" ;;
         -f|--full)  MODE="full"  ;;
-        -h|--help)  print_usage; exit 0 ;;
+        -j|--json)  MODE="json"  ;;
+        -e|--explain)
+            MODE="explain"
+            EXPLAIN_USER="${2:-}"
+            EXPLAIN_DEST="${3:-}"
+            if [ -z "$EXPLAIN_USER" ] || [ -z "$EXPLAIN_DEST" ]; then
+                echo "--explain needs a username and a destination IP" >&2
+                exit 2
+            fi
+            shift 2
+            ;;
+        -h|--help) print_usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; print_usage; exit 2 ;;
     esac
     shift
@@ -54,16 +78,27 @@ TRACE4="https://1.1.1.1/cdn-cgi/trace"
 TRACE6="https://[2606:4700:4700::1111]/cdn-cgi/trace"
 DIAG_MARK="0xd1a6"
 DIAG_RULE_PRIO=790
+DIAG_TMP="/tmp/ocserv-diag.$$"
+
+WARNS=0
+HAVE_V6=0
 
 # ---- Small helpers ----------------------------------------------------------
 
 hr() { echo "================================================================"; }
 section() { echo "### $1"; }
+ok()   { echo "[ok] $*"; }
+info() { echo "[info] $*"; }
+warn() { WARNS=$((WARNS + 1)); echo "[warn] $*"; }
 
 conf_get() { # $1 = directive; prints its value from ocserv.conf (first match)
+    conf_get_all "$1" | head -1
+}
+
+conf_get_all() { # $1 = directive; prints every value, one per line
     [ -f "$ocserv_config" ] || return 0
     sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$ocserv_config" \
-        | head -1 | sed 's/[[:space:]]*#.*//; s/"//g'
+        | sed 's/[[:space:]]*#.*//; s/"//g'
 }
 
 mask2len() { # 255.255.255.0 -> 24
@@ -74,6 +109,16 @@ mask2len() { # 255.255.255.0 -> 24
 
 fetch_url() { # $1 = url; prints the body (busybox wget, no cert verification)
     wget -q -T 8 -O - "$1" 2>/dev/null
+}
+
+# HTTP status of a URL: "200" when the fetch succeeded, else the code parsed
+# from busybox wget's "server returned error: HTTP/1.1 404 ..." message.
+http_status() {
+    if _hs="$(wget -T 5 -O /dev/null "$1" 2>&1)"; then
+        echo 200
+    else
+        printf '%s\n' "$_hs" | sed -n 's|.*HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p' | head -1
+    fi
 }
 
 trace_field() { # $1 = trace body, $2 = field; cdn-cgi/trace is "key=value" lines
@@ -90,13 +135,57 @@ nft_set_count() { # $1 = set name (in table inet ocserv_bypass)
         | grep -c '[0-9:]' || true
 }
 
+hb() { # human-readable byte count
+    awk -v b="$1" 'BEGIN {
+        u = "B"
+        if (b >= 1024) { b /= 1024; u = "K" }
+        if (b >= 1024) { b /= 1024; u = "M" }
+        if (b >= 1024) { b /= 1024; u = "G" }
+        if (u == "B") printf "%d%s", b, u; else printf "%.1f%s", b, u }'
+}
+
+age_fmt() { # seconds -> 45s / 12m / 6h / 3d
+    awk -v s="$1" 'BEGIN {
+        if (s < 0) s = 0
+        if (s < 120) printf "%ds", s
+        else if (s < 7200) printf "%dm", s / 60
+        else if (s < 172800) printf "%dh", s / 3600
+        else printf "%dd", s / 86400 }'
+}
+
+file_age() { # $1 = file -> age in seconds, clamped at 0 (empty if unknown)
+    _fa_m="$(stat -c %Y "$1" 2>/dev/null)" || return 0
+    [ -n "$_fa_m" ] || return 0
+    _fa_a=$(( $(date +%s) - _fa_m ))
+    [ "$_fa_a" -lt 0 ] && _fa_a=0
+    echo "$_fa_a"
+}
+
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# RX/TX counters of a tun device, human formatted
+dev_counters() { # $1 = device -> "rx/tx" or "-"
+    if [ -n "$1" ] && [ -r "/sys/class/net/$1/statistics/rx_bytes" ]; then
+        echo "$(hb "$(cat "/sys/class/net/$1/statistics/rx_bytes")")/$(hb "$(cat "/sys/class/net/$1/statistics/tx_bytes")")"
+    else
+        echo "-"
+    fi
+}
+
+dev_counters_raw() { # $1 = device -> "rx tx" in bytes (empty if unknown)
+    [ -n "$1" ] && [ -r "/sys/class/net/$1/statistics/rx_bytes" ] || return 0
+    echo "$(cat "/sys/class/net/$1/statistics/rx_bytes") $(cat "/sys/class/net/$1/statistics/tx_bytes")"
+}
+
 # ---- Egress probe machinery -------------------------------------------------
-# Armed once, cleaned up on exit. probe_via_table() steers the marked probe
-# traffic through one routing table at a time.
+# Armed once (empty chains), cleaned up on exit. Each probe installs its own
+# marking + masquerade rules (scoped to the probe destination), runs, and the
+# next probe flushes them.
 
 PROBES_ARMED=0
 
 diag_probe_cleanup() {
+    rm -f "$DIAG_TMP"
     [ "$PROBES_ARMED" = 1 ] || return 0
     _n=0
     while [ "$_n" -lt 8 ] && ip rule del priority "$DIAG_RULE_PRIO" 2>/dev/null; do
@@ -109,54 +198,93 @@ diag_probe_cleanup() {
     nft delete table inet ocserv_diag 2>/dev/null || true
     PROBES_ARMED=0
 }
+trap diag_probe_cleanup EXIT INT TERM
 
 diag_probe_arm() {
-    diag_probe_cleanup
+    [ "$PROBES_ARMED" = 1 ] && return 0
     if nft -f - <<EOF
 table inet ocserv_diag {
     chain output {
         type route hook output priority mangle; policy accept;
-        ip daddr $TEST4 tcp dport 443 meta mark set $DIAG_MARK
-        ip6 daddr $TEST6 tcp dport 443 meta mark set $DIAG_MARK
     }
     chain postrouting {
         type nat hook postrouting priority 110; policy accept;
-        meta mark $DIAG_MARK masquerade
     }
 }
 EOF
     then
         PROBES_ARMED=1
-        trap diag_probe_cleanup EXIT INT TERM
         return 0
     fi
-    echo "[warn] could not install the probe chain; per-gateway probes skipped"
+    info "could not install the probe chain; egress probes skipped"
     return 1
 }
 
-probe_via_table() { # $1 = table (or "main"), $2 = family 4|6; prints "IP (LOC)" on success
+# Remove the per-probe marking rules; MUST be called after a probe block so a
+# leftover mark rule cannot steer later plain fetches through a gateway table.
+probe_rules_clear() {
+    nft flush chain inet ocserv_diag output 2>/dev/null
+    nft flush chain inet ocserv_diag postrouting 2>/dev/null
+}
+
+probe_set_mark() { # $1 = family 4|6, $2 = mark: mark+masquerade probe traffic only
+    probe_rules_clear
+    if [ "$1" = 4 ]; then
+        nft add rule inet ocserv_diag output ip daddr "$TEST4" tcp dport 443 meta mark set "$2" \
+            && nft add rule inet ocserv_diag postrouting ip daddr "$TEST4" meta mark "$2" masquerade
+    else
+        nft add rule inet ocserv_diag output ip6 daddr "$TEST6" tcp dport 443 meta mark set "$2" \
+            && nft add rule inet ocserv_diag postrouting ip6 daddr "$TEST6" meta mark "$2" masquerade
+    fi
+}
+
+probe_fetch() { # $1 = family 4|6; prints "IP (LOC)"
+    if [ "$1" = 4 ]; then
+        _pf_body="$(fetch_url "$TRACE4")"
+    else
+        _pf_body="$(fetch_url "$TRACE6")"
+    fi
+    [ -n "$_pf_body" ] || return 1
+    _pf_ip="$(trace_field "$_pf_body" ip)"
+    [ -n "$_pf_ip" ] || return 1
+    printf '%s (%s)\n' "$_pf_ip" "$(trace_field "$_pf_body" loc)"
+}
+
+probe_via_table() { # $1 = table (or "main"), $2 = family 4|6
+    probe_set_mark "$2" "$DIAG_MARK" >/dev/null 2>&1 || return 1
     if [ "$2" = 4 ]; then
         ip rule add fwmark "$DIAG_MARK" lookup "$1" priority "$DIAG_RULE_PRIO" 2>/dev/null || return 1
-        _pt_body="$(fetch_url "$TRACE4")" || _pt_body=""
+        _pv_r="$(probe_fetch 4)"; _pv_rc=$?
         ip rule del priority "$DIAG_RULE_PRIO" 2>/dev/null
     else
         ip -6 rule add fwmark "$DIAG_MARK" lookup "$1" priority "$DIAG_RULE_PRIO" 2>/dev/null || return 1
-        _pt_body="$(fetch_url "$TRACE6")" || _pt_body=""
+        _pv_r="$(probe_fetch 6)"; _pv_rc=$?
         ip -6 rule del priority "$DIAG_RULE_PRIO" 2>/dev/null
     fi
-    [ -n "$_pt_body" ] || return 1
-    _pt_ip="$(trace_field "$_pt_body" ip)"
-    _pt_loc="$(trace_field "$_pt_body" loc)"
-    [ -n "$_pt_ip" ] || return 1
-    printf '%s (%s)\n' "$_pt_ip" "${_pt_loc:-??}"
+    [ "$_pv_rc" = 0 ] || return 1
+    printf '%s\n' "$_pv_r"
 }
 
-ping_probe() { # $1 = family 4|6, $2 = address; prints ok/fail text
+probe_via_mark() { # $1 = mark, $2 = family: rely on the LIVE bypass fwmark rules
+    probe_set_mark "$2" "$1" >/dev/null 2>&1 || return 1
+    probe_fetch "$2"
+}
+
+ping_probe() { # $1 = family 4|6, $2 = address -> "reachable (X ms)" | "NO REPLY"
     if [ "$1" = 4 ]; then
-        if ping -c 1 -W 2 "$2" >/dev/null 2>&1; then echo "reachable"; else echo "NO REPLY"; fi
+        _pp="$(ping -c 1 -W 2 "$2" 2>/dev/null)" || _pp=""
     else
-        if ping -6 -c 1 -W 2 "$2" >/dev/null 2>&1 \
-            || ping6 -c 1 -W 2 "$2" >/dev/null 2>&1; then echo "reachable"; else echo "NO REPLY"; fi
+        _pp="$(ping -6 -c 1 -W 2 "$2" 2>/dev/null || ping6 -c 1 -W 2 "$2" 2>/dev/null)" || _pp=""
+    fi
+    if [ -z "$_pp" ]; then
+        echo "NO REPLY"
+        return
+    fi
+    _rtt="$(printf '%s\n' "$_pp" | sed -n 's|.*= *[0-9.]*/\([0-9.]*\)/.*|\1|p' | head -1)"
+    if [ -n "$_rtt" ]; then
+        echo "reachable ($_rtt ms)"
+    else
+        echo "reachable"
     fi
 }
 
@@ -171,71 +299,11 @@ pools_with_targets() {
     printf '%s\n' "${_pw_out# }"
 }
 
-# ---- Gather basic facts -----------------------------------------------------
-
-OCSERV_PID="$(pidof ocserv 2>/dev/null | awk '{ print $1 }')" || OCSERV_PID=""
-if [ -n "$OCSERV_PID" ]; then
-    SERVER_STATE="running (pid $OCSERV_PID)"
-else
-    SERVER_STATE="NOT RUNNING"
-fi
-
-CONNECTED=0
-if [ -d "$vpngw_state_dir/sessions" ]; then
-    CONNECTED="$(find "$vpngw_state_dir/sessions" -type f 2>/dev/null | wc -l)"
-elif [ -n "$OCSERV_PID" ]; then
-    # No per-user hook: count from occtl (drop header/separator lines)
-    CONNECTED="$(occtl show users 2>/dev/null | awk 'NR > 1 && NF > 3' | wc -l)"
-fi
-
-GW_ACTIVE=0
-[ -d "$vpngw_state_dir" ] && GW_ACTIVE=1
-
-# ---- Basic mode -------------------------------------------------------------
-
-if [ "$MODE" = "basic" ]; then
-    _body="$(fetch_url "$TRACE4")" || _body=""
-    _direct=""
-    [ -n "$_body" ] && _direct="$(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
-    echo "ocserv: $SERVER_STATE, $CONNECTED client(s); direct egress: ${_direct:-UNREACHABLE}"
-    _body6="$(fetch_url "$TRACE6")" || _body6=""
-    [ -n "$_body6" ] \
-        && echo "direct egress v6: $(trace_field "$_body6" ip) ($(trace_field "$_body6" loc))"
-    if [ "$GW_ACTIVE" = 1 ] && [ -f "$vpngw_state_dir/gateways" ] && diag_probe_arm >/dev/null; then
-        while read -r _name _tbl _g4 _g6; do
-            [ -n "$_name" ] || continue
-            if [ "$_g4" != "block" ]; then
-                _r="$(probe_via_table "$_tbl" 4)" || _r="UNREACHABLE"
-            else
-                _r="v4 blocked"
-            fi
-            if [ "$_g6" != "block" ]; then
-                _r6="$(probe_via_table "$_tbl" 6)" || _r6="UNREACHABLE"
-                _r="$_r / v6: $_r6"
-            fi
-            echo "gateway $_name: $_r"
-        done < "$vpngw_state_dir/gateways"
-        diag_probe_cleanup
-    fi
-    [ -n "$OCSERV_PID" ] || exit 1
-    exit 0
-fi
-
-# ---- Full diagnostics -------------------------------------------------------
-
-hr
-echo "ocserv-server DIAG (full) : $(date -Is 2>/dev/null || date)"
-echo "Kernel                    : $(uname -r)"
-echo "ocserv version            : $(ocserv --version 2>&1 | head -1)"
-echo "Server status             : $SERVER_STATE"
-echo "Connected clients         : $CONNECTED"
-echo
-
 # occtl pages its output when stdout is a TTY (docker exec -t / compose exec),
 # taking over the screen mid-report. Capturing into a variable makes occtl's
 # stdout a pipe, which disables the pager deterministically.
 occtl_show() {
-    _oc="$(occtl "$@" 2>&1)" || { echo "[info] occtl unavailable (is ocserv running?)"; return 0; }
+    _oc="$(occtl "$@" 2>&1)" || { info "occtl unavailable (is ocserv running?)"; return 0; }
     printf '%s\n' "$_oc"
 }
 
@@ -259,12 +327,302 @@ occtl_users_map() {
         }'
 }
 
+# ---- Certificate inspection -------------------------------------------------
+# Sets CERT_SUBJECT / CERT_ISSUER / CERT_NOTAFTER / CERT_DAYS ("" if unknown)
+# from the FIRST certificate in the file (fullchain files put the leaf first).
+cert_parse() { # $1 = certificate file
+    CERT_SUBJECT=""; CERT_ISSUER=""; CERT_NOTAFTER=""; CERT_DAYS=""
+    command -v certtool >/dev/null 2>&1 || return 2
+    _cp="$(certtool -i --infile "$1" 2>/dev/null)" || return 1
+    CERT_SUBJECT="$(printf '%s\n' "$_cp" | sed -n 's/^[[:space:]]*Subject: //p' | head -1)"
+    CERT_ISSUER="$(printf '%s\n' "$_cp" | sed -n 's/^[[:space:]]*Issuer: //p' | head -1)"
+    CERT_NOTAFTER="$(printf '%s\n' "$_cp" | sed -n 's/^[[:space:]]*Not After: //p' | head -1)"
+    if [ -n "$CERT_NOTAFTER" ]; then
+        # "Sun Oct 12 08:33:12 UTC 2026" -> "Oct 12 08:33:12 2026" -> epoch
+        _cd="$(printf '%s\n' "$CERT_NOTAFTER" | awk '{ print $2, $3, $4, $6 }')"
+        _ce="$(date -u -D '%b %d %H:%M:%S %Y' -d "$_cd" +%s 2>/dev/null \
+            || date -u -d "$CERT_NOTAFTER" +%s 2>/dev/null)" || _ce=""
+        if [ -n "$_ce" ]; then
+            CERT_DAYS=$(( (_ce - $(date +%s)) / 86400 ))
+        fi
+    fi
+    return 0
+}
+
+# Resolve a possibly-relative ocserv.conf path like ocserv does
+conf_path() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *)  printf '%s/%s\n' "$(dirname "$ocserv_config")" "$1" ;;
+    esac
+}
+
+# ---- Gather basic facts -----------------------------------------------------
+
+OCSERV_PID="$(pidof ocserv 2>/dev/null | awk '{ print $1 }')" || OCSERV_PID=""
+if [ -n "$OCSERV_PID" ]; then
+    SERVER_STATE="running (pid $OCSERV_PID)"
+else
+    SERVER_STATE="NOT RUNNING"
+fi
+
+CONNECTED=0
+if [ -d "$vpngw_state_dir/sessions" ]; then
+    CONNECTED="$(find "$vpngw_state_dir/sessions" -type f 2>/dev/null | wc -l)"
+elif [ -n "$OCSERV_PID" ]; then
+    # No per-user hook: count from occtl (drop header/separator lines)
+    CONNECTED="$(occtl show users 2>/dev/null | awk '$1 ~ /^[0-9]+$/' | wc -l)"
+fi
+
+GW_ACTIVE=0
+[ -d "$vpngw_state_dir" ] && GW_ACTIVE=1
+
+SUB4="-"; SUB6="-"
+[ -f "$vpngw_state_dir/subnet" ] && { read -r SUB4 SUB6 < "$vpngw_state_dir/subnet" || true; }
+[ -n "$SUB4" ] || SUB4="-"
+[ -n "$SUB6" ] || SUB6="-"
+
+BYPASS_MODE=""
+[ -f "$vpngw_state_dir/bypass_mode" ] && BYPASS_MODE="$(cat "$vpngw_state_dir/bypass_mode")"
+
+# ---- Explain mode -----------------------------------------------------------
+# Which path does USER's traffic to DEST take? Mirrors the runtime decision:
+# bypass pools in marking-chain order first (the first matching pool wins),
+# then the user's gateway, then the subnet default.
+
+if [ "$MODE" = "explain" ]; then
+    _fam=4
+    if is_ipv4 "$EXPLAIN_DEST"; then
+        _fam=4
+    elif is_ipv6 "$EXPLAIN_DEST"; then
+        _fam=6
+    else
+        echo "'$EXPLAIN_DEST' is not a literal IP address" >&2
+        exit 2
+    fi
+
+    _gw="-"
+    if [ -f "$vpngw_state_dir/users" ]; then
+        _gw="$(awk -v u="$EXPLAIN_USER" '$1 == u { print $2; exit }' "$vpngw_state_dir/users")"
+        [ -n "$_gw" ] || _gw="-"
+    fi
+
+    # 1. bypass pools, in marking-chain order
+    _pools="$(bypass_session_pools "$EXPLAIN_USER" "$_gw")"
+    if [ -n "$_pools" ] && [ -f "$vpngw_state_dir/bypass_pools" ]; then
+        while read -r _p; do
+            case " $_pools " in *" $_p "*) ;; *) continue ;; esac
+            _hit="$(nft get element inet ocserv_bypass "pool_${_p}_v$_fam" "{ $EXPLAIN_DEST }" 2>/dev/null)" || continue
+            _iv="$(printf '%s\n' "$_hit" | sed -n 's/.*elements = { *\(.*\) *}.*/\1/p' | head -1 | sed 's/[[:space:]]*$//')"
+            _t="$(awk -v p="$_p" '$1 == p { print $2; exit }' "$vpngw_state_dir/bypass_targets" 2>/dev/null)"
+            _t="${_t:-direct}"
+            case "$_t" in
+                direct)
+                    echo "$EXPLAIN_DEST matches pool '$_p' (${_iv:-member}) -> target direct: exits via the main table (ISP), not via gateway '$_gw'"
+                    ;;
+                block)
+                    echo "$EXPLAIN_DEST matches pool '$_p' (${_iv:-member}) -> target block: REJECTED (ICMP admin-prohibited)"
+                    ;;
+                *)
+                    _l="$(awk -v n="$_t" '$1 == n { print; exit }' "$vpngw_state_dir/gateways" 2>/dev/null)"
+                    echo "$EXPLAIN_DEST matches pool '$_p' (${_iv:-member}) -> target gateway '$_t' (table $(echo "$_l" | awk '{ print $2 }'), next-hop $(echo "$_l" | awk -v f="$_fam" '{ print (f == 4) ? $3 : $4 }'))"
+                    ;;
+            esac
+            exit 0
+        done < "$vpngw_state_dir/bypass_pools"
+    fi
+
+    # 2. no pool matched: the user's gateway (or the subnet default)
+    if [ "$GW_ACTIVE" != 1 ]; then
+        echo "$EXPLAIN_DEST matches no pool; gateway mode is off -> exits via the container default route (ISP)"
+        exit 0
+    fi
+    case "$_gw" in
+        direct)
+            echo "$EXPLAIN_DEST matches no pool -> user '$EXPLAIN_USER' is mapped 'direct': exits via the container default route (ISP)"
+            ;;
+        -)
+            if [ "$_fam" = 4 ]; then _s="$SUB4"; else _s="$SUB6"; fi
+            case "$_s" in
+                -)      if [ "$_fam" = 6 ]; then
+                            echo "$EXPLAIN_DEST matches no pool -> unmapped user, IPv6 not routed: REJECTED (fail-closed)"
+                        else
+                            echo "$EXPLAIN_DEST matches no pool -> unmapped user: exits via the container default route (ISP)"
+                        fi ;;
+                block)  echo "$EXPLAIN_DEST matches no pool -> unmapped user, family blocked: REJECTED" ;;
+                direct) echo "$EXPLAIN_DEST matches no pool -> unmapped user: exits via the container default route (ISP)" ;;
+                *)      echo "$EXPLAIN_DEST matches no pool -> unmapped user: default gateway $_s (table $vpn_gateway_table)" ;;
+            esac
+            ;;
+        *)
+            _l="$(awk -v n="$_gw" '$1 == n { print; exit }' "$vpngw_state_dir/gateways" 2>/dev/null)"
+            if [ -z "$_l" ]; then
+                echo "$EXPLAIN_DEST matches no pool -> user '$EXPLAIN_USER' maps to unknown gateway '$_gw'?"
+                exit 1
+            fi
+            _nh="$(echo "$_l" | awk -v f="$_fam" '{ print (f == 4) ? $3 : $4 }')"
+            if [ "$_nh" = "block" ]; then
+                echo "$EXPLAIN_DEST matches no pool -> gateway '$_gw' blocks this family: REJECTED (fail-closed)"
+            else
+                echo "$EXPLAIN_DEST matches no pool -> gateway '$_gw' (table $(echo "$_l" | awk '{ print $2 }'), next-hop $_nh)"
+            fi
+            ;;
+    esac
+    exit 0
+fi
+
+# ---- Basic mode -------------------------------------------------------------
+
+if [ "$MODE" = "basic" ]; then
+    _body="$(fetch_url "$TRACE4")" || _body=""
+    _direct=""
+    [ -n "$_body" ] && _direct="$(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+    [ -n "$_direct" ] || WARNS=$((WARNS + 1))
+    echo "ocserv: $SERVER_STATE, $CONNECTED client(s); direct egress: ${_direct:-UNREACHABLE}"
+    _body6="$(fetch_url "$TRACE6")" || _body6=""
+    [ -n "$_body6" ] \
+        && echo "direct egress v6: $(trace_field "$_body6" ip) ($(trace_field "$_body6" loc))"
+    if [ "$GW_ACTIVE" = 1 ] && [ -f "$vpngw_state_dir/gateways" ] && diag_probe_arm >/dev/null; then
+        while read -r _name _tbl _g4 _g6; do
+            [ -n "$_name" ] || continue
+            if [ "$_g4" != "block" ]; then
+                _r="$(probe_via_table "$_tbl" 4)" || { _r="UNREACHABLE"; WARNS=$((WARNS + 1)); }
+            else
+                _r="v4 blocked"
+            fi
+            if [ "$_g6" != "block" ]; then
+                _r6="$(probe_via_table "$_tbl" 6)" || { _r6="UNREACHABLE"; WARNS=$((WARNS + 1)); }
+                _r="$_r / v6: $_r6"
+            fi
+            echo "gateway $_name: $_r"
+        done < "$vpngw_state_dir/gateways"
+        diag_probe_cleanup
+    fi
+    [ -n "$OCSERV_PID" ] || exit 1
+    [ "$WARNS" = 0 ] || exit 1
+    exit 0
+fi
+
+# ---- JSON mode --------------------------------------------------------------
+# Compact machine-readable summary for monitoring: server state, config
+# sanity, per-gateway probe results, clients with live counters, pool state,
+# certificates and headline verdicts.
+
+if [ "$MODE" = "json" ]; then
+    CONF_NET="$(conf_get ipv4-network)"
+    CONF_MASK="$(conf_get ipv4-netmask)"
+    _match=false
+    [ -n "$CONF_NET" ] && [ -n "$CONF_MASK" ] \
+        && [ "$CONF_NET/$(mask2len "$CONF_MASK")" = "$vpn_subnet" ] && _match=true
+
+    _j_gws=""
+    if [ "$GW_ACTIVE" = 1 ] && [ -f "$vpngw_state_dir/gateways" ] && diag_probe_arm >/dev/null; then
+        while read -r _name _tbl _g4 _g6; do
+            [ -n "$_name" ] || continue
+            _e4="null"; _e6="null"
+            if [ "$_g4" != "block" ]; then
+                if _r="$(probe_via_table "$_tbl" 4)"; then
+                    _e4="\"$(json_escape "$_r")\""
+                else
+                    _e4="\"UNREACHABLE\""; WARNS=$((WARNS + 1))
+                fi
+            fi
+            if [ "$_g6" != "block" ]; then
+                if _r="$(probe_via_table "$_tbl" 6)"; then
+                    _e6="\"$(json_escape "$_r")\""
+                else
+                    _e6="\"UNREACHABLE\""; WARNS=$((WARNS + 1))
+                fi
+            fi
+            _j_gws="$_j_gws,{\"name\":\"$(json_escape "$_name")\",\"table\":$_tbl,\"ipv4\":\"$_g4\",\"ipv6\":\"$_g6\",\"egress4\":$_e4,\"egress6\":$_e6}"
+        done < "$vpngw_state_dir/gateways"
+        diag_probe_cleanup
+    fi
+
+    _d4="null"; _d6="null"
+    _body="$(fetch_url "$TRACE4")" || _body=""
+    [ -n "$_body" ] && _d4="\"$(json_escape "$(trace_field "$_body" ip) ($(trace_field "$_body" loc))")\""
+    _body="$(fetch_url "$TRACE6")" || _body=""
+    [ -n "$_body" ] && _d6="\"$(json_escape "$(trace_field "$_body" ip) ($(trace_field "$_body" loc))")\""
+
+    _j_cl=""
+    if [ -d "$vpngw_state_dir/sessions" ]; then
+        OCCTL_MAP="$(occtl_users_map)"
+        for _rec in "$vpngw_state_dir"/sessions/*; do
+            [ -f "$_rec" ] || continue
+            read -r _u _g _ip4 _ip6 _bp < "$_rec" || continue
+            _oline="$(printf '%s\n' "$OCCTL_MAP" | awk -v v="$_ip4" '$1 == v { print; exit }')"
+            _pub="$(printf '%s' "$_oline" | awk '{ print $2 }')"
+            _dev="$(printf '%s' "$_oline" | awk '{ print $3 }')"
+            _cnt="$(dev_counters_raw "$_dev")"
+            _rx="${_cnt%% *}"; _tx="${_cnt##* }"
+            _j_cl="$_j_cl,{\"user\":\"$(json_escape "$_u")\",\"assigned_ipv4\":\"$_ip4\",\"assigned_ipv6\":$([ "${_ip6:--}" != "-" ] && echo "\"$_ip6\"" || echo null),\"client_ip\":$([ -n "$_pub" ] && echo "\"$(json_escape "$_pub")\"" || echo null),\"device\":$([ -n "$_dev" ] && [ "$_dev" != "-" ] && echo "\"$_dev\"" || echo null),\"rx_bytes\":${_rx:-null},\"tx_bytes\":${_tx:-null},\"gateway\":\"$(json_escape "$_g")\",\"bypass\":\"$(json_escape "${_bp:--}")\"}"
+        done
+    fi
+
+    _j_pools=""
+    if [ -f "$vpngw_state_dir/bypass_targets" ]; then
+        while read -r _p _t _m; do
+            [ -n "$_p" ] || continue
+            _lf="$vpn_bypass_pools_dir/$_p.list"
+            _age="null"; _lines=0
+            if [ -f "$_lf" ]; then
+                _lines="$(wc -l < "$_lf")"
+                _a="$(file_age "$_lf")"; [ -n "$_a" ] && _age="$_a"
+            fi
+            _j_pools="$_j_pools,{\"name\":\"$(json_escape "$_p")\",\"target\":\"$(json_escape "$_t")\",\"mark\":$_m,\"v4\":$(nft_set_count "pool_${_p}_v4"),\"v6\":$(nft_set_count "pool_${_p}_v6"),\"subscribers_v4\":$(nft_set_count "users_${_p}_v4"),\"subscribers_v6\":$(nft_set_count "users_${_p}_v6"),\"list_lines\":$_lines,\"list_age_seconds\":$_age}"
+        done < "$vpngw_state_dir/bypass_targets"
+    fi
+
+    _j_certs=""
+    for _cf in $(conf_get_all server-cert); do
+        _cf="$(conf_path "$_cf")"
+        if [ ! -f "$_cf" ]; then
+            _j_certs="$_j_certs,{\"file\":\"$(json_escape "$_cf")\",\"error\":\"missing\"}"
+            WARNS=$((WARNS + 1))
+            continue
+        fi
+        if cert_parse "$_cf"; then
+            _ss=false
+            [ -n "$CERT_SUBJECT" ] && [ "$CERT_SUBJECT" = "$CERT_ISSUER" ] && _ss=true
+            [ -n "$CERT_DAYS" ] && [ "$CERT_DAYS" -lt 14 ] && WARNS=$((WARNS + 1))
+            _j_certs="$_j_certs,{\"file\":\"$(json_escape "$_cf")\",\"subject\":\"$(json_escape "$CERT_SUBJECT")\",\"issuer\":\"$(json_escape "$CERT_ISSUER")\",\"self_signed\":$_ss,\"not_after\":\"$(json_escape "$CERT_NOTAFTER")\",\"days_left\":${CERT_DAYS:-null}}"
+        else
+            _j_certs="$_j_certs,{\"file\":\"$(json_escape "$_cf")\",\"error\":\"unparseable\"}"
+        fi
+    done
+
+    _nat=false;  nft list table inet ocserv >/dev/null 2>&1 && _nat=true
+    _ks=false;   nft list table inet ocserv_gw >/dev/null 2>&1 && _ks=true
+    _byp=false;  nft list table inet ocserv_bypass >/dev/null 2>&1 && _byp=true
+    _run=false;  [ -n "$OCSERV_PID" ] && _run=true
+    [ -n "$OCSERV_PID" ] || WARNS=$((WARNS + 1))
+
+    printf '{"server":{"running":%s,"pid":%s,"version":"%s","clients":%s},"config":{"vpn_subnet":"%s","subnet_match":%s,"camouflage":%s},"direct":{"egress4":%s,"egress6":%s},"gateways":[%s],"clients":[%s],"bypass_pools":[%s],"certificates":[%s],"tables":{"nat":%s,"killswitch":%s,"bypass":%s},"warnings":%s}\n' \
+        "$_run" "${OCSERV_PID:-null}" "$(json_escape "$(ocserv --version 2>&1 | head -1)")" "$CONNECTED" \
+        "$vpn_subnet" "$_match" "$([ "$(conf_get camouflage)" = "true" ] && echo true || echo false)" \
+        "$_d4" "$_d6" "${_j_gws#,}" "${_j_cl#,}" "${_j_pools#,}" "${_j_certs#,}" \
+        "$_nat" "$_ks" "$_byp" "$WARNS"
+    [ "$WARNS" = 0 ] || exit 1
+    exit 0
+fi
+
+# ---- Full diagnostics -------------------------------------------------------
+
+hr
+echo "ocserv-server DIAG (full) : $(date -Is 2>/dev/null || date)"
+echo "Kernel                    : $(uname -r)"
+echo "ocserv version            : $(ocserv --version 2>&1 | head -1)"
+echo "Server status             : $SERVER_STATE"
+echo "Connected clients         : $CONNECTED"
+echo
+
 section "occtl show status"
 occtl_show show status
 echo
 
 section "Listening sockets"
-netstat -tuln 2>/dev/null | awk 'NR <= 2 || /LISTEN|udp/' || echo "[info] netstat unavailable"
+netstat -tuln 2>/dev/null | awk 'NR <= 2 || /LISTEN|udp/' || info "netstat unavailable"
 echo
 
 section "Effective configuration (env)"
@@ -305,12 +663,81 @@ echo "max-clients / max-same-clients : $(conf_get max-clients) / $(conf_get max-
 if [ -n "$CONF_NET" ] && [ -n "$CONF_MASK" ]; then
     CONF_CIDR="$CONF_NET/$(mask2len "$CONF_MASK")"
     if [ "$CONF_CIDR" = "$vpn_subnet" ]; then
-        echo "[ok] VPN_SUBNET matches ipv4-network/netmask ($CONF_CIDR)"
+        ok "VPN_SUBNET matches ipv4-network/netmask ($CONF_CIDR)"
     else
-        echo "[warn] VPN_SUBNET ($vpn_subnet) != ocserv.conf $CONF_CIDR - client traffic will NOT be masqueraded"
+        warn "VPN_SUBNET ($vpn_subnet) != ocserv.conf $CONF_CIDR - client traffic will NOT be masqueraded"
     fi
 fi
 echo
+
+# ---- Certificates -----------------------------------------------------------
+
+section "Certificates"
+CERTS_DEFINED=0
+for _cf in $(conf_get_all server-cert); do
+    CERTS_DEFINED=1
+    _cf="$(conf_path "$_cf")"
+    if [ ! -f "$_cf" ]; then
+        warn "server-cert $_cf: file missing"
+        continue
+    fi
+    cert_parse "$_cf"
+    case $? in
+        2) info "certtool not available; cannot inspect $_cf"; continue ;;
+        1) warn "server-cert $_cf: could not parse"; continue ;;
+    esac
+    echo "server-cert $_cf:"
+    echo "  subject  : ${CERT_SUBJECT:-?}"
+    if [ -n "$CERT_SUBJECT" ] && [ "$CERT_SUBJECT" = "$CERT_ISSUER" ]; then
+        echo "  issuer   : (self-signed)"
+        info "certificate is SELF-SIGNED - clients must pin it; consider Let's Encrypt for production"
+    else
+        echo "  issuer   : ${CERT_ISSUER:-?} (CA-signed)"
+    fi
+    if [ -n "$CERT_DAYS" ]; then
+        if [ "$CERT_DAYS" -lt 0 ]; then
+            warn "certificate EXPIRED $((-CERT_DAYS)) day(s) ago (${CERT_NOTAFTER:-?})"
+        elif [ "$CERT_DAYS" -lt 14 ]; then
+            warn "certificate expires in $CERT_DAYS day(s) (${CERT_NOTAFTER:-?}) - is renewal working? (CERT_WATCH: $cert_watch)"
+        else
+            echo "  expires  : $CERT_NOTAFTER ($CERT_DAYS days left)"
+        fi
+    else
+        echo "  expires  : ${CERT_NOTAFTER:-?}"
+    fi
+done
+[ "$CERTS_DEFINED" = 1 ] || info "no server-cert defined in $ocserv_config"
+for _kf in $(conf_get_all server-key); do
+    _kf="$(conf_path "$_kf")"
+    [ -f "$_kf" ] || warn "server-key $_kf: file missing"
+done
+echo
+
+# ---- Camouflage self-test ---------------------------------------------------
+
+if [ "$(conf_get camouflage)" = "true" ] && [ -n "$OCSERV_PID" ]; then
+    section "Camouflage self-test (local probe)"
+    _cs_port="$(conf_get tcp-port)"
+    _cs_port="${_cs_port:-443}"
+    _cs_secret="$(conf_get camouflage_secret)"
+    _st="$(http_status "https://127.0.0.1:$_cs_port/")"
+    if [ "$_st" = "200" ]; then
+        warn "probe WITHOUT the secret got HTTP 200 - camouflage does not seem to gate the handshake"
+    else
+        ok "probe without the secret got HTTP ${_st:-error} (server presents as a plain website)"
+    fi
+    if [ -n "$_cs_secret" ]; then
+        _st="$(http_status "https://127.0.0.1:$_cs_port/?$_cs_secret")"
+        if [ "$_st" = "200" ]; then
+            ok "probe with the configured secret got HTTP 200 (VPN endpoint reachable)"
+        else
+            warn "probe WITH the secret got HTTP ${_st:-error} - clients using the secret may be failing too"
+        fi
+    else
+        info "camouflage enabled but no camouflage_secret set?"
+    fi
+    echo
+fi
 
 # ---- Gateway mode -----------------------------------------------------------
 
@@ -319,10 +746,7 @@ if [ "$GW_ACTIVE" != 1 ]; then
     echo "inactive - no gateway configured; clients exit via the default route"
     echo
 else
-    if [ -f "$vpngw_state_dir/subnet" ]; then
-        read -r SUB4 SUB6 < "$vpngw_state_dir/subnet" || true
-        echo "subnet default (unmapped users) : v4=${SUB4:--} v6=${SUB6:--} (table $vpn_gateway_table)"
-    fi
+    echo "subnet default (unmapped users) : v4=$SUB4 v6=$SUB6 (table $vpn_gateway_table)"
     if [ -f "$vpngw_state_dir/gateways" ]; then
         printf '%-12s %-6s %-18s %s\n' "gateway" "table" "ipv4" "ipv6"
         while read -r _name _tbl _g4 _g6; do
@@ -341,11 +765,11 @@ else
         gw_is_literal "$3" && return 0
         _dc_now="$(gw_resolve_all "-$2" "$3")"
         if [ -z "$_dc_now" ]; then
-            echo "[warn] $1: DNS name '$3' does not resolve right now (routing keeps pinned $4)"
+            warn "$1: DNS name '$3' does not resolve right now (routing keeps pinned $4)"
         elif printf '%s\n' "$_dc_now" | grep -qxF "$4"; then
-            echo "[ok] $1: '$3' resolves to the pinned next-hop $4"
+            ok "$1: '$3' resolves to the pinned next-hop $4"
         else
-            echo "[warn] $1: '$3' now resolves to $(printf '%s\n' "$_dc_now" | head -1) but routing pins $4 - run vpngw-gw-resolve (or set VPN_GATEWAYS_RESOLVE_INTERVAL)"
+            warn "$1: '$3' now resolves to $(printf '%s\n' "$_dc_now" | head -1) but routing pins $4 - run vpngw-gw-resolve (or set VPN_GATEWAYS_RESOLVE_INTERVAL)"
         fi
     }
     if [ -f "$vpngw_state_dir/gateways.src" ]; then
@@ -357,8 +781,8 @@ else
             dns_check "gateway $_name v6" 6 "$_s6" "$_pin6"
         done < "$vpngw_state_dir/gateways.src"
     fi
-    [ -n "$vpn_gateway" ] && dns_check "default gateway v4" 4 "$vpn_gateway" "${SUB4:--}"
-    [ -n "$vpn_gateway6" ] && dns_check "default gateway v6" 6 "$vpn_gateway6" "${SUB6:--}"
+    [ -n "$vpn_gateway" ] && dns_check "default gateway v4" 4 "$vpn_gateway" "$SUB4"
+    [ -n "$vpn_gateway6" ] && dns_check "default gateway v6" 6 "$vpn_gateway6" "$SUB6"
     echo
 
     section "Gateway egress probes (next-hop ping + public IP via each table)"
@@ -366,15 +790,19 @@ else
         # Direct baseline first (main table, the container's own egress)
         _r="$(probe_via_table main 4)" || _r="UNREACHABLE"
         printf '%-22s : %s\n' "direct (main table)" "$_r"
-        _r="$(probe_via_table main 6)" || _r="no IPv6 egress"
+        if _r="$(probe_via_table main 6)"; then
+            HAVE_V6=1
+        else
+            _r="no IPv6 egress"
+        fi
         printf '%-22s : %s\n' "direct v6 (main table)" "$_r"
         # Subnet default
-        if [ -n "${SUB4:-}" ] && [ "$SUB4" != "-" ] && [ "$SUB4" != "block" ]; then
+        if [ "$SUB4" != "-" ] && [ "$SUB4" != "block" ]; then
             printf '%-22s : next-hop %s\n' "default (table $vpn_gateway_table)" "$(ping_probe 4 "$SUB4")"
             _r="$(probe_via_table "$vpn_gateway_table" 4)" || _r="UNREACHABLE"
             printf '%-22s : %s\n' "default egress v4" "$_r"
         fi
-        if [ -n "${SUB6:-}" ] && [ "$SUB6" != "-" ] && [ "$SUB6" != "block" ] && [ "$SUB6" != "direct" ]; then
+        if [ "$SUB6" != "-" ] && [ "$SUB6" != "block" ] && [ "$SUB6" != "direct" ]; then
             _r="$(probe_via_table "$vpn_gateway_table" 6)" || _r="UNREACHABLE"
             printf '%-22s : %s\n' "default egress v6" "$_r"
         fi
@@ -398,7 +826,7 @@ else
                 fi
             done < "$vpngw_state_dir/gateways"
         fi
-        diag_probe_cleanup
+        probe_rules_clear
     fi
     echo
 
@@ -433,10 +861,10 @@ fi
 
 section "Connected sessions"
 if [ -d "$vpngw_state_dir/sessions" ]; then
-    # One merged table per client (session record + occtl details); the raw
-    # occtl table would only duplicate these rows.
-    printf '%-16s %-16s %-16s %-7s %-8s %-9s %s\n' \
-        "user" "assigned IP" "client IP" "device" "since" "gateway" "bypass"
+    # One merged table per client (session record + occtl details + live
+    # interface counters); the raw occtl table would only duplicate these rows.
+    printf '%-16s %-16s %-16s %-7s %-8s %-13s %-9s %s\n' \
+        "user" "assigned IP" "client IP" "device" "since" "RX/TX" "gateway" "bypass"
     OCCTL_MAP="$(occtl_users_map)"
     _found=0
     for _rec in "$vpngw_state_dir"/sessions/*; do
@@ -451,10 +879,66 @@ if [ -d "$vpngw_state_dir/sessions" ]; then
         [ "${_ip6:--}" != "-" ] && _int="$_ip4,$_ip6"
         _bpp=""
         [ "${_bp:--}" != "-" ] && _bpp="$(pools_with_targets "$(printf '%s' "$_bp" | tr '+' ' ')")"
-        printf '%-16s %-16s %-16s %-7s %-8s %-9s %s\n' \
-            "$_u" "$_int" "${_pub:--}" "${_dev:--}" "${_since:--}" "$_g" "$_bpp"
+        printf '%-16s %-16s %-16s %-7s %-8s %-13s %-9s %s\n' \
+            "$_u" "$_int" "${_pub:--}" "${_dev:--}" "${_since:--}" \
+            "$(dev_counters "$_dev")" "$_g" "$_bpp"
     done
     [ "$_found" = 1 ] || echo "(none connected)"
+
+    # Integrity audit: the session record, the policy rule, the kill-switch
+    # set and the bypass source sets must all agree for every live session.
+    if [ "$_found" = 1 ]; then
+        echo
+        for _rec in "$vpngw_state_dir"/sessions/*; do
+            [ -f "$_rec" ] || continue
+            read -r _u _g _ip4 _ip6 _bp < "$_rec" || continue
+            _bad=""
+            case "$_g" in
+                -) : ;; # unmapped: covered by the subnet rule, no per-session state
+                direct)
+                    ip rule show 2>/dev/null | grep -q "from $_ip4 lookup main" \
+                        || _bad="$_bad no-policy-rule"
+                    nft get element inet ocserv_gw direct_v4 "{ $_ip4 }" >/dev/null 2>&1 \
+                        || _bad="$_bad not-in-direct_v4"
+                    ;;
+                *)
+                    _l="$(awk -v n="$_g" '$1 == n { print; exit }' "$vpngw_state_dir/gateways" 2>/dev/null)"
+                    _tbl="$(echo "$_l" | awk '{ print $2 }')"
+                    _g4="$(echo "$_l" | awk '{ print $3 }')"
+                    _g6="$(echo "$_l" | awk '{ print $4 }')"
+                    if [ "$_g4" != "block" ]; then
+                        ip rule show 2>/dev/null | grep -q "from $_ip4 lookup $_tbl" \
+                            || _bad="$_bad no-v4-policy-rule"
+                        nft get element inet ocserv_gw "gw_${_g}_v4" "{ $_ip4 }" >/dev/null 2>&1 \
+                            || _bad="$_bad not-in-gw_${_g}_v4"
+                    else
+                        nft get element inet ocserv_gw v4_block "{ $_ip4 }" >/dev/null 2>&1 \
+                            || _bad="$_bad not-in-v4_block"
+                    fi
+                    if [ "${_ip6:--}" != "-" ]; then
+                        if [ "$_g6" != "block" ]; then
+                            ip -6 rule show 2>/dev/null | grep -q "from $_ip6 lookup $_tbl" \
+                                || _bad="$_bad no-v6-policy-rule"
+                        else
+                            nft get element inet ocserv_gw v6_block "{ $_ip6 }" >/dev/null 2>&1 \
+                                || _bad="$_bad not-in-v6_block"
+                        fi
+                    fi
+                    ;;
+            esac
+            if [ "${_bp:--}" != "-" ] && [ "$BYPASS_MODE" = "user" ]; then
+                for _p in $(printf '%s' "$_bp" | tr '+' ' '); do
+                    nft get element inet ocserv_bypass "users_${_p}_v4" "{ $_ip4 }" >/dev/null 2>&1 \
+                        || _bad="$_bad not-subscribed-to-$_p"
+                done
+            fi
+            if [ -n "$_bad" ]; then
+                warn "session $_u ($_ip4): inconsistent state:$_bad (vpngw-reload usually reconciles)"
+            else
+                ok "session $_u ($_ip4): policy rule, kill-switch set and bypass membership consistent"
+            fi
+        done
+    fi
 else
     # No per-user hook, so no session records - occtl is the only source
     occtl_show show users
@@ -464,27 +948,69 @@ echo
 # ---- Destination bypass -----------------------------------------------------
 
 if [ -f "$vpngw_state_dir/bypass_pools" ]; then
-    section "Destination bypass ($(cat "$vpngw_state_dir/bypass_mode" 2>/dev/null) mode)"
+    section "Destination bypass ($BYPASS_MODE mode)"
     printf '%-14s %-10s %-6s %-22s %-14s %s\n' "pool" "target" "mark" "loaded (v4+v6)" "subscribers" "list file"
     while read -r _p _t _m; do
         [ -n "$_p" ] || continue
         _n4="$(nft_set_count "pool_${_p}_v4")"
         _n6="$(nft_set_count "pool_${_p}_v6")"
-        _sub="-"
-        if [ "$(cat "$vpngw_state_dir/bypass_mode" 2>/dev/null)" = "user" ]; then
+        if [ "$BYPASS_MODE" = "user" ]; then
             _sub="$(nft_set_count "users_${_p}_v4") v4 + $(nft_set_count "users_${_p}_v6") v6"
         else
             _sub="whole subnet"
         fi
         _lf="$vpn_bypass_pools_dir/$_p.list"
         if [ -f "$_lf" ]; then
-            _lfs="$(wc -l < "$_lf") lines"
+            _age="$(file_age "$_lf")"
+            _lfs="$(wc -l < "$_lf") lines ($(age_fmt "${_age:-0}") old)"
+            # Freshness vs the fetcher interval (allow one missed run)
+            if [ -n "$vpn_bypass_sources_file" ] && [ "${vpn_bypass_update_interval:-0}" -gt 0 ] 2>/dev/null \
+                && [ -n "$_age" ] && [ "$_age" -gt $((vpn_bypass_update_interval * 2)) ] \
+                && grep -q "^[[:space:]]*${_p}[[:space:]]" "$vpn_bypass_sources_file" 2>/dev/null; then
+                _stale_pools="${_stale_pools:-} $_p($(age_fmt "$_age"))"
+            fi
         else
             _lfs="MISSING (empty pool)"
         fi
         printf '%-14s %-10s %-6s %-22s %-14s %s\n' "$_p" "$_t" "$_m" \
             "$_n4 + $_n6 intervals" "$_sub" "$_lfs"
     done < "$vpngw_state_dir/bypass_targets"
+    [ -n "${_stale_pools:-}" ] \
+        && warn "pool list(s) older than 2x VPN_BYPASS_UPDATE_INTERVAL:${_stale_pools} - check bypass-fetch (docker logs, grep BYPASS-FETCH)"
+
+    # Probe each distinct bypass target through its LIVE fwmark rule: proves
+    # the prio-800 policy rules and the target's routing table end to end.
+    # "block" has no policy rule (enforced by the kill switch on the forward
+    # path) so it cannot be probed from the server itself.
+    if diag_probe_arm; then
+        echo
+        echo "bypass egress probes (via each target's live fwmark rule):"
+        awk '!seen[$3]++ { print $2, $3 }' "$vpngw_state_dir/bypass_targets" > "$DIAG_TMP"
+        while read -r _t _m; do
+            case "$_t" in
+                block)
+                    printf '%-30s : %s\n' "target block (mark $_m)" "not probeable (rejected in the forward path only)"
+                    ;;
+                *)
+                    _r="$(probe_via_mark "$_m" 4)" || { _r="UNREACHABLE"; WARNS=$((WARNS + 1)); }
+                    printf '%-30s : %s\n' "target $_t (mark $_m) v4" "$_r"
+                    _probe6=0
+                    if [ "$_t" = "direct" ]; then
+                        [ "$HAVE_V6" = 1 ] && _probe6=1
+                    else
+                        _tg6="$(awk -v n="$_t" '$1 == n { print $4; exit }' "$vpngw_state_dir/gateways" 2>/dev/null)"
+                        [ -n "$_tg6" ] && [ "$_tg6" != "block" ] && _probe6=1
+                    fi
+                    if [ "$_probe6" = 1 ]; then
+                        _r="$(probe_via_mark "$_m" 6)" || _r="UNREACHABLE"
+                        printf '%-30s : %s\n' "target $_t (mark $_m) v6" "$_r"
+                    fi
+                    ;;
+            esac
+        done < "$DIAG_TMP"
+        rm -f "$DIAG_TMP"
+        probe_rules_clear
+    fi
     echo
 fi
 
@@ -492,7 +1018,7 @@ fi
 
 section "Policy rules (ip rule / ip -6 rule)"
 ip rule show 2>/dev/null || true
-ip -6 rule show 2>/dev/null || echo "[info] no IPv6 policy rules"
+ip -6 rule show 2>/dev/null || info "no IPv6 policy rules"
 echo
 
 section "Routing tables"
@@ -501,7 +1027,7 @@ ip route show 2>/dev/null | sed 's/^/  /'
 ip -6 route show 2>/dev/null | sed 's/^/  /'
 if [ "$GW_ACTIVE" = 1 ]; then
     # Table 100 only exists when a subnet default gateway is routed
-    if [ "${SUB4:--}" != "-" ] || { [ "${SUB6:--}" != "-" ] && [ "${SUB6:-}" != "block" ] && [ "${SUB6:-}" != "direct" ]; }; then
+    if [ "$SUB4" != "-" ] || { [ "$SUB6" != "-" ] && [ "$SUB6" != "block" ] && [ "$SUB6" != "direct" ]; }; then
         echo "table $vpn_gateway_table (default gateway):"
         ip route show table "$vpn_gateway_table" 2>/dev/null | sed 's/^/  /' || true
         ip -6 route show table "$vpn_gateway_table" 2>/dev/null | sed 's/^/  /' || true
@@ -540,32 +1066,32 @@ fi
 section "Connectivity (direct / main table)"
 echo "ip_forward / ipv6 forwarding   : $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null) / $(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)"
 if ping -c 2 -W 3 "$TEST4" >/dev/null 2>&1; then
-    echo "[ok] ping $TEST4"
+    ok "ping $TEST4"
 else
-    echo "[warn] ping $TEST4 failed"
+    warn "ping $TEST4 failed"
 fi
 if ping -6 -c 2 -W 3 "$TEST6" >/dev/null 2>&1 || ping6 -c 2 -W 3 "$TEST6" >/dev/null 2>&1; then
-    echo "[ok] ping $TEST6"
+    ok "ping $TEST6"
 else
-    echo "[info] ping $TEST6 failed (no IPv6 egress?)"
+    info "ping $TEST6 failed (no IPv6 egress?)"
 fi
 DNS_RES="$(getent hosts one.one.one.one 2>/dev/null | awk '{ print $1; exit }')"
 if [ -n "$DNS_RES" ]; then
-    echo "[ok] DNS resolves (one.one.one.one -> $DNS_RES)"
+    ok "DNS resolves (one.one.one.one -> $DNS_RES)"
 else
-    echo "[warn] DNS resolution failed"
+    warn "DNS resolution failed"
 fi
 _body="$(fetch_url "$TRACE4")" || _body=""
 if [ -n "$_body" ]; then
-    echo "[ok] public IPv4 (direct)      : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+    ok "public IPv4 (direct)      : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
 else
-    echo "[warn] could not fetch public IPv4"
+    warn "could not fetch public IPv4"
 fi
 _body="$(fetch_url "$TRACE6")" || _body=""
 if [ -n "$_body" ]; then
-    echo "[ok] public IPv6 (direct)      : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+    ok "public IPv6 (direct)      : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
 else
-    echo "[info] no public IPv6 (fine unless clients are meant to use IPv6)"
+    info "no public IPv6 (fine unless clients are meant to use IPv6)"
 fi
 echo
 
@@ -573,34 +1099,39 @@ echo
 
 section "Quick verdicts"
 if [ -n "$OCSERV_PID" ]; then
-    echo "[ok] ocserv is running"
+    ok "ocserv is running"
 else
-    echo "[warn] ocserv is NOT running - check docker logs"
+    warn "ocserv is NOT running - check docker logs"
 fi
 if nft list table inet ocserv >/dev/null 2>&1; then
-    echo "[ok] NAT table (inet ocserv) present"
+    ok "NAT table (inet ocserv) present"
 else
-    echo "[warn] NAT table missing - client traffic cannot be masqueraded"
+    warn "NAT table missing - client traffic cannot be masqueraded"
 fi
 if [ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)" = "1" ]; then
-    echo "[ok] IPv4 forwarding enabled"
+    ok "IPv4 forwarding enabled"
 else
-    echo "[warn] IPv4 forwarding is OFF - set --sysctl net.ipv4.ip_forward=1"
+    warn "IPv4 forwarding is OFF - set --sysctl net.ipv4.ip_forward=1"
 fi
 if [ "$GW_ACTIVE" = 1 ]; then
     if nft list table inet ocserv_gw >/dev/null 2>&1; then
-        echo "[ok] gateway kill switch (inet ocserv_gw) present"
+        ok "gateway kill switch (inet ocserv_gw) present"
     else
-        echo "[warn] gateway mode active but kill switch table is missing"
+        warn "gateway mode active but kill switch table is missing"
     fi
 fi
 if [ -f "$vpngw_state_dir/bypass_pools" ]; then
     if nft list table inet ocserv_bypass >/dev/null 2>&1; then
-        echo "[ok] destination-bypass table (inet ocserv_bypass) present"
+        ok "destination-bypass table (inet ocserv_bypass) present"
     else
-        echo "[warn] bypass configured but its nft table is missing"
+        warn "bypass configured but its nft table is missing"
     fi
 fi
-echo "Done."
+if [ "$WARNS" = 0 ]; then
+    echo "Done - no warnings."
+else
+    echo "Done - $WARNS warning(s) above."
+fi
 hr
+[ "$WARNS" = 0 ] || exit 1
 exit 0
