@@ -704,7 +704,8 @@ echo "ipv4-network / netmask         : ${CONF_NET:-<unset>} / ${CONF_MASK:-<unse
 echo "ipv6-network                   : $(conf_get ipv6-network)"
 echo "device                         : $(conf_get device)"
 echo "tunnel-all-dns                 : $(conf_get tunnel-all-dns)"
-echo "camouflage                     : $(conf_get camouflage)"
+_camo="$(conf_get camouflage)"
+echo "camouflage                     : ${_camo:-false}"
 echo "max-clients / max-same-clients : $(conf_get max-clients) / $(conf_get max-same-clients)"
 # The classic pitfall: VPN_SUBNET must equal ipv4-network/netmask
 if [ -n "$CONF_NET" ] && [ -n "$CONF_MASK" ]; then
@@ -762,33 +763,44 @@ echo
 
 # ---- Camouflage self-test ---------------------------------------------------
 
-if [ "$(conf_get camouflage)" = "true" ] && [ -n "$OCSERV_PID" ]; then
-    section "Camouflage self-test (local probe)"
+if [ -n "$OCSERV_PID" ]; then
     _cs_port="$(conf_get tcp-port)"
     _cs_port="${_cs_port:-443}"
-    _cs_secret="$(conf_get camouflage_secret)"
-    _st="$(http_probe "https://127.0.0.1:$_cs_port/")"
-    case "$_st" in
-        200)
-            warn "probe WITHOUT the secret got HTTP 200 - camouflage does not seem to gate the handshake"
-            ;;
-        ERR*)
-            # busybox wget's minimal TLS client may not complete a handshake
-            # with the server's TLS priorities - that says nothing about
-            # camouflage, so report it as inconclusive, not as a failure.
-            info "local probe could not complete a TLS/HTTP exchange (${_st#ERR }) - self-test inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/"
-            _cs_secret=""
-            ;;
-        *)
-            ok "probe without the secret got HTTP $_st (server presents as a plain website)"
-            ;;
-    esac
-    if [ -n "$_cs_secret" ]; then
-        _st="$(http_probe "https://127.0.0.1:$_cs_port/?$_cs_secret")"
+    if [ "$(conf_get camouflage)" = "true" ]; then
+        section "Camouflage self-test (local probe)"
+        _cs_secret="$(conf_get camouflage_secret)"
+        _st="$(http_probe "https://127.0.0.1:$_cs_port/")"
         case "$_st" in
-            200)  ok "probe with the configured secret got HTTP 200 (VPN endpoint reachable)" ;;
-            ERR*) info "probe with the secret could not complete a TLS/HTTP exchange (${_st#ERR }) - inconclusive" ;;
-            *)    warn "probe WITH the secret got HTTP $_st - clients using the secret may be failing too" ;;
+            200)
+                warn "probe WITHOUT the secret got HTTP 200 - camouflage does not seem to gate the handshake"
+                ;;
+            ERR*)
+                # busybox wget's minimal TLS client may not complete a handshake
+                # with the server's TLS priorities - that says nothing about
+                # camouflage, so report it as inconclusive, not as a failure.
+                info "local probe could not complete a TLS/HTTP exchange (${_st#ERR }) - self-test inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/"
+                _cs_secret=""
+                ;;
+            *)
+                ok "probe without the secret got HTTP $_st (server presents as a plain website)"
+                ;;
+        esac
+        if [ -n "$_cs_secret" ]; then
+            _st="$(http_probe "https://127.0.0.1:$_cs_port/?$_cs_secret")"
+            case "$_st" in
+                200)  ok "probe with the configured secret got HTTP 200 (VPN endpoint reachable)" ;;
+                ERR*) info "probe with the secret could not complete a TLS/HTTP exchange (${_st#ERR }) - inconclusive" ;;
+                *)    warn "probe WITH the secret got HTTP $_st - clients using the secret may be failing too" ;;
+            esac
+        fi
+    else
+        # No camouflage: the endpoint should answer a plain HTTPS GET directly
+        section "Server self-test (local probe)"
+        _st="$(http_probe "https://127.0.0.1:$_cs_port/")"
+        case "$_st" in
+            200)  ok "VPN endpoint answers on port $_cs_port (HTTP 200, camouflage off)" ;;
+            ERR*) info "local probe could not complete a TLS/HTTP exchange (${_st#ERR }) - inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/" ;;
+            *)    info "endpoint answered HTTP $_st on port $_cs_port (a real client handshake may still succeed)" ;;
         esac
     fi
     echo
