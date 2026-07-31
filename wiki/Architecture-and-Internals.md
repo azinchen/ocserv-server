@@ -25,12 +25,12 @@ Pinned, reproducible apk versions are used throughout. The base image and packag
 
 ## Startup: the s6 service graph
 
-s6-overlay runs the service tree under `/etc/s6-overlay/s6-rc.d`. Three services matter:
+s6-overlay runs the service tree under `/etc/s6-overlay/s6-rc.d`. Four services form the core:
 
 ```
-init-config ─┐
-             ├─► svc-ocserv   (longrun)
-init-nat ────┘
+init-config ──┐
+init-nat ─────┼─► svc-ocserv   (longrun)
+init-vpngw ───┘
 ```
 
 ### init-config
@@ -45,9 +45,13 @@ Oneshot. Prepares networking:
 - Installs the `table inet ocserv` nftables rules: a forward chain for the tunnel interface and a postrouting masquerade for `VPN_SUBNET` via `WAN_IF`. Optionally IPv6 masquerade when `IPV6_NAT=1`. See [[Networking NAT and Routing]].
 - Installs an MSS clamp for the client CSTP connection in a separate table (`inet ocserv_mss`), on SYN in both directions on `WAN_IF` and any gateway-egress interface — to each interface's MTU by default, or to a hard cap when `MSS=<n>` is set; only ever lowering an advertised MSS. Non-fatal: a failure to load logs a warning but doesn't stop startup. See [Networking NAT and Routing#mss-clamping](Networking-NAT-and-Routing#mss-clamping).
 
+### init-vpngw
+
+Oneshot. A no-op unless [[Gateway Mode]] is configured. When it is, it builds everything gateway routing needs before ocserv starts: per-gateway routing tables and policy rules, the fail-closed kill switch (`table inet ocserv_gw`), the destination-bypass table (`inet ocserv_bypass` — pool sets, per-target fwmarks and policy rules, see [[Destination Bypass]]), and — for per-user routing — installs the managed `connect-script`/`disconnect-script` hook block into `ocserv.conf` (`ocserv-vpngw-script`, which chain-calls any hook you had configured). Runtime state is written to `/run/ocserv-vpngw/` and shared with the hook and the reload commands. Invalid gateway/bypass configuration fails the container start loudly rather than starting half-routed.
+
 ### svc-ocserv
 
-Longrun, depends on both oneshots. Creates runtime dirs (`/run/ocserv`, …) and execs:
+Longrun, depends on the oneshots. Creates runtime dirs (`/run/ocserv`, …) and execs:
 
 ```
 ocserv --foreground --config /etc/ocserv/ocserv.conf --log-stderr
@@ -62,8 +66,8 @@ Six longruns stay in the service bundle unconditionally but **idle** (`sleep inf
 - **svc-cert-watch** — when `CERT_WATCH=1`, watches the `server-cert`/`server-key` files from `ocserv.conf` (via `inotifyd`) and runs `cert-reload` on change, which sends ocserv a `SIGHUP`. ocserv re-reads the certificate without dropping connected clients. See [[Reverse Proxy and Certificates]].
 - **svc-cert-poll** — the polling fallback for the above: when `CERT_WATCH_INTERVAL>0`, re-stats the same cert files every N seconds and reloads on an mtime/size change, for filesystems where `inotify` can't see the write (e.g. NFS).
 - **svc-vpngw-watch** — re-runs `vpngw-reload` when a watched per-user map file changes: the gateway map (`VPN_USER_GATEWAY_WATCH=1` → `VPN_USER_GATEWAY_FILE`) and/or the destination-bypass map (`VPN_USER_BYPASS_WATCH=1` → `VPN_USER_BYPASS_FILE`).
-- **svc-bypass-watch** — when `VPN_BYPASS_WATCH=1`, re-runs `bypass-reload` when a destination-bypass pool list in `VPN_BYPASS_POOLS_DIR` changes (see [Gateway Mode#destination-bypass-pools](Gateway-Mode#destination-bypass-pools)).
-- **svc-bypass-fetch** — when `VPN_BYPASS_UPDATE_INTERVAL>0`, downloads the bypass pool lists from `VPN_BYPASS_SOURCES_FILE` on that interval (and at startup for pools with no published list), publishing atomically and hot-reloading on change (see [Gateway Mode#fetching-lists-automatically](Gateway-Mode#fetching-lists-automatically)).
+- **svc-bypass-watch** — when `VPN_BYPASS_WATCH=1`, re-runs `bypass-reload` when a destination-bypass pool list in `VPN_BYPASS_POOLS_DIR` changes (see [Destination Bypass#updating-pool-contents-at-runtime](Destination-Bypass#updating-pool-contents-at-runtime)).
+- **svc-bypass-fetch** — when `VPN_BYPASS_UPDATE_INTERVAL>0`, downloads the bypass pool lists from `VPN_BYPASS_SOURCES_FILE` on that interval (and at startup for pools with no published list), publishing atomically and hot-reloading on change (see [Destination Bypass#fetching-lists-automatically](Destination-Bypass#fetching-lists-automatically)).
 - **svc-vpngw-gw-resolve** — when `VPN_GATEWAYS_RESOLVE_INTERVAL>0`, periodically re-resolves DNS-named gateways. Both are covered in [[Gateway Mode]].
 
 ## Configuration knobs are centralized
@@ -80,7 +84,10 @@ All env-var defaults live in one helper, `/usr/local/bin/backend-functions`, whi
 | `/usr/sbin/ocserv`, `/usr/sbin/ocserv-worker` | The server |
 | `/usr/bin/occtl`, `/usr/bin/ocpasswd` | Control + user tools |
 | `/usr/libexec/ocserv-fw` | Per-user firewall helper (nftables) |
+| `/usr/local/bin/` | Helper scripts: `backend-functions` (shared env/config helpers) and the admin commands `vpngw-reload`, `vpngw-gw-resolve`, `bypass-reload`, `bypass-fetch`, `cert-reload` (all runnable via `docker exec`) |
+| `/etc/ocserv/pools/` | Destination-bypass pool lists (`<name>.list`, on your volume) |
 | `/run/ocserv/` | PID + control sockets |
+| `/run/ocserv-vpngw/` | Gateway/bypass runtime state (parsed gateways, user maps, per-session records) |
 | `/swag-config/` | Optional read-only SWAG certs |
 
 ---

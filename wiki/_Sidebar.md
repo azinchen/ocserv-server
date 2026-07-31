@@ -16,6 +16,7 @@
 - [[Reverse Proxy and Certificates]]
 - [[Networking NAT and Routing]]
 - [[Gateway Mode]]
+- [[Destination Bypass]]
 - [[Clients and Devices]]
 
 **Under the hood**
