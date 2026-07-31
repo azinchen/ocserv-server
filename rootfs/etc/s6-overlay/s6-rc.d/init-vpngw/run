@@ -41,15 +41,15 @@ restore_config() {
 rm -rf "$vpngw_state_dir"
 
 # Remove destination-bypass machinery from a previous run (rebuilt below when
-# configured). Delete our fwmark policy rules by priority + main table, the
-# shape only we install.
+# configured). Delete our fwmark policy rules by priority alone - with per-pool
+# targets they may look up the main table or any gateway table.
 nft delete table inet ocserv_bypass 2>/dev/null || true
 n=0
-while [ "$n" -lt 16 ] && ip rule del priority "$vpn_bypass_rule_prio" table main 2>/dev/null; do
+while [ "$n" -lt 32 ] && ip rule del priority "$vpn_bypass_rule_prio" 2>/dev/null; do
     n=$((n + 1))
 done
 n=0
-while [ "$n" -lt 16 ] && ip -6 rule del priority "$vpn_bypass_rule_prio" table main 2>/dev/null; do
+while [ "$n" -lt 32 ] && ip -6 rule del priority "$vpn_bypass_rule_prio" 2>/dev/null; do
     n=$((n + 1))
 done
 
@@ -63,7 +63,7 @@ gw_active=0
 case "$vpn_gateway6" in ""|direct) ;; *) gw_active=1 ;; esac
 if [ "$gw_active" = 0 ]; then
     restore_config
-    if [ -n "$vpn_gateway_bypass$vpn_gateways_bypass$vpn_user_bypass$vpn_user_bypass_file" ]; then
+    if [ -n "$vpn_gateway_bypass$vpn_gateways_bypass$vpn_user_bypass$vpn_user_bypass_file$vpn_bypass_targets" ]; then
         log_error "[INIT-VPNGW] Warning: destination-bypass settings ignored - no gateway is configured, so clients already exit direct"
     fi
     log "[INIT-VPNGW] No gateway configured; clients exit via the default route"
@@ -168,16 +168,20 @@ fi
 
 # ---- Destination-bypass pools ----------------------------------------------
 # Traffic whose DESTINATION is in a named pool (a CIDR list file
-# $VPN_BYPASS_POOLS_DIR/<name>.list) exits direct via the main table instead of
-# the session's gateway - e.g. a cascade node in a country whose local
-# destinations must not take the upstream tunnel. Pools attach per user
+# $VPN_BYPASS_POOLS_DIR/<name>.list) escapes the session's gateway and goes to
+# the pool's TARGET (VPN_BYPASS_TARGETS): "direct" (the default - the main
+# table / ISP, e.g. a cascade node in a country whose local destinations must
+# not take the upstream tunnel), a named gateway (matched traffic takes THAT
+# gateway instead of the session's), or "block" ("drop" is an alias; matched
+# destinations are rejected - a destination blocklist). Pools attach per user
 # (VPN_USER_BYPASS[_FILE]; "none" opts a user out), per named gateway
 # (VPN_GATEWAYS_BYPASS, inherited by its users) or to the default gateway's
 # unmapped users (VPN_GATEWAY_BYPASS). Multiple pools join with '+'.
 # Mechanism: a prerouting chain (table inet ocserv_bypass) fwmarks matching
-# client traffic; an "fwmark -> main" policy rule stronger than every gateway
-# rule routes it, and the kill switch accepts the mark explicitly - a pool
-# match is a deliberate go-direct and wins even over a blocked family.
+# client traffic with its pool's target mark; per-target fwmark policy rules
+# stronger than every gateway rule route it, and the kill switch handles each
+# mark explicitly - a pool match is a deliberate instruction and wins even
+# over a blocked family.
 
 bypass_pools_used=""
 bypass_note_pool() { # validate one pool name ($1) from context $2; record it
@@ -282,6 +286,53 @@ if [ -n "$bypass_pools_used" ]; then
         echo subnet > "$vpngw_state_dir/bypass_mode"
     fi
     [ -n "$bypass_default" ] && printf '%s\n' "$bypass_default" > "$vpngw_state_dir/bypass_default"
+
+    # Per-pool targets (VPN_BYPASS_TARGETS, "pool=target,..."). Validate every
+    # entry: the pool must be attached somewhere above, the target must be
+    # "direct", "block"/"drop" or a defined named gateway.
+    kv_pairs "$vpn_bypass_targets" \
+        | awk '{ if ($2 == "drop") $2 = "block"; print $1, $2 }' \
+        > "$vpngw_state_dir/bypass_targets.map"
+    while read -r pname ptarget; do
+        [ -n "$pname" ] || continue
+        case " $bypass_pools_used " in
+            *" $pname "*) ;;
+            *)
+                log_error "[INIT-VPNGW] VPN_BYPASS_TARGETS: pool '$pname' is not attached anywhere (VPN_GATEWAY_BYPASS / VPN_GATEWAYS_BYPASS / VPN_USER_BYPASS)"
+                exit 1
+                ;;
+        esac
+        case "$ptarget" in
+            direct|block) ;;
+            *)
+                if ! awk -v n="$ptarget" '$1 == n { f = 1 } END { exit !f }' \
+                    "$vpngw_state_dir/gateways" 2>/dev/null; then
+                    log_error "[INIT-VPNGW] VPN_BYPASS_TARGETS: unknown target '$ptarget' for pool '$pname' (use 'direct', 'block' or a VPN_GATEWAYS name)"
+                    exit 1
+                fi
+                ;;
+        esac
+    done < "$vpngw_state_dir/bypass_targets.map"
+
+    # Resolve every pool to "pool target mark" (unlisted pools default to
+    # "direct"). Marks: the base VPN_BYPASS_MARK for "direct"; every other
+    # target gets base+1, base+2... in sorted order (deterministic per boot).
+    bypass_extra_targets="$(awk '$2 != "direct" { print $2 }' \
+        "$vpngw_state_dir/bypass_targets.map" | sort -u)"
+    : > "$vpngw_state_dir/bypass_targets"
+    for p in $bypass_pools_used; do
+        t="$(awk -v p="$p" '$1 == p { print $2; exit }' "$vpngw_state_dir/bypass_targets.map")"
+        t="${t:-direct}"
+        if [ "$t" = "direct" ]; then
+            m="$((vpn_bypass_mark))"
+        else
+            i="$(printf '%s\n' "$bypass_extra_targets" | awk -v t="$t" '$1 == t { print NR; exit }')"
+            m="$((vpn_bypass_mark + i))"
+        fi
+        printf '%s %s %s\n' "$p" "$t" "$m" >> "$vpngw_state_dir/bypass_targets"
+    done
+    rm -f "$vpngw_state_dir/bypass_targets.map"
+
     if ! bypass_load_table; then
         log_error "[INIT-VPNGW] Could not install the bypass marking chain; aborting"
         exit 1
@@ -289,10 +340,44 @@ if [ -n "$bypass_pools_used" ]; then
     for p in $bypass_pools_used; do
         bypass_load_pool "$p" || true
     done
-    ip rule add fwmark "$vpn_bypass_mark" lookup main priority "$vpn_bypass_rule_prio"
-    ip -6 rule add fwmark "$vpn_bypass_mark" lookup main priority "$vpn_bypass_rule_prio" \
-        || log_error "[INIT-VPNGW] Warning: could not add the IPv6 bypass policy rule"
-    log "[INIT-VPNGW] Destination bypass active ($(cat "$vpngw_state_dir/bypass_mode") mode; pools:$bypass_pools_used; mark $vpn_bypass_mark prio $vpn_bypass_rule_prio)"
+
+    # One policy-rule pair per distinct target: "direct" -> the main table; a
+    # named gateway -> its routing table (only the families it routes); "block"
+    # -> no rule at all (marked packets are rejected by the kill switch, the
+    # same stance as a blocked gateway family).
+    awk '!seen[$3]++ { print $2, $3 }' "$vpngw_state_dir/bypass_targets" \
+        > "$vpngw_state_dir/bypass_rules.tmp"
+    while read -r t m; do
+        case "$t" in
+            direct)
+                ip rule add fwmark "$m" lookup main priority "$vpn_bypass_rule_prio"
+                ip -6 rule add fwmark "$m" lookup main priority "$vpn_bypass_rule_prio" \
+                    || log_error "[INIT-VPNGW] Warning: could not add the IPv6 bypass policy rule"
+                ;;
+            block) ;;
+            *)
+                tline="$(awk -v n="$t" '$1 == n { print; exit }' "$vpngw_state_dir/gateways")"
+                ttbl="$(echo "$tline" | awk '{ print $2 }')"
+                tg4="$(echo "$tline" | awk '{ print $3 }')"
+                tg6="$(echo "$tline" | awk '{ print $4 }')"
+                if [ "$tg4" != "block" ]; then
+                    ip rule add fwmark "$m" lookup "$ttbl" priority "$vpn_bypass_rule_prio"
+                fi
+                if [ "$tg6" != "block" ]; then
+                    ip -6 rule add fwmark "$m" lookup "$ttbl" priority "$vpn_bypass_rule_prio" \
+                        || log_error "[INIT-VPNGW] Warning: could not add the IPv6 bypass policy rule for target '$t'"
+                fi
+                ;;
+        esac
+    done < "$vpngw_state_dir/bypass_rules.tmp"
+    rm -f "$vpngw_state_dir/bypass_rules.tmp"
+
+    while read -r p t m; do
+        log "[INIT-VPNGW] Bypass pool '$p' -> $t (mark $m)"
+    done < "$vpngw_state_dir/bypass_targets"
+    log "[INIT-VPNGW] Destination bypass active ($(cat "$vpngw_state_dir/bypass_mode") mode; pools:$bypass_pools_used; base mark $vpn_bypass_mark prio $vpn_bypass_rule_prio)"
+elif [ -n "$vpn_bypass_targets" ]; then
+    log_error "[INIT-VPNGW] Warning: VPN_BYPASS_TARGETS ignored - no bypass pool is attached (VPN_GATEWAY_BYPASS / VPN_GATEWAYS_BYPASS / VPN_USER_BYPASS)"
 fi
 
 # ---- Subnet default for unmapped users -------------------------------------

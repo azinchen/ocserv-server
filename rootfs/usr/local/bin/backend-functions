@@ -38,6 +38,7 @@ vpn_gateway_user_rule_prio="${VPN_GATEWAY_USER_RULE_PRIO:-900}"
 vpn_bypass_pools_dir="${VPN_BYPASS_POOLS_DIR:-/etc/ocserv/pools}"
 vpn_gateway_bypass="${VPN_GATEWAY_BYPASS:-}"
 vpn_gateways_bypass="${VPN_GATEWAYS_BYPASS:-}"
+vpn_bypass_targets="${VPN_BYPASS_TARGETS:-}"
 vpn_user_bypass="${VPN_USER_BYPASS:-}"
 vpn_user_bypass_file="${VPN_USER_BYPASS_FILE:-}"
 vpn_user_bypass_watch="${VPN_USER_BYPASS_WATCH:-0}"
@@ -252,11 +253,16 @@ vpngw_build_users() {
 
 # ---- Destination-bypass pools (table inet ocserv_bypass) -------------------
 # Traffic from the client subnet whose DESTINATION is in a named pool exits via
-# the main table (direct/ISP) instead of the session's gateway. Matching packets
-# are fwmarked in a prerouting chain; a fwmark policy rule (stronger than every
-# gateway rule) routes them, and the kill switch accepts the mark explicitly.
+# the pool's TARGET instead of the session's gateway: the main table ("direct",
+# the default), a named gateway's table, or nowhere ("block" - rejected).
+# Matching packets are fwmarked in a prerouting chain (one mark per distinct
+# target); fwmark policy rules (stronger than every gateway rule) route them,
+# and the kill switch handles each mark explicitly.
 # State written by init-vpngw in $vpngw_state_dir:
 #   bypass_pools    one pool name per line (nft sets pool_<name>_v4/_v6 exist)
+#   bypass_targets  "pool target mark" per pool; target is "direct", "block"
+#                   or a named gateway; the mark is decimal (direct = the base
+#                   VPN_BYPASS_MARK, every other target gets base+1, base+2...)
 #   bypass_mode     "user" (per-user mode: the connect hook fills the
 #                   users_<name>_v4/_v6 source sets) or "subnet" (no per-user
 #                   mode: the marking rules match the whole client subnet)
@@ -360,13 +366,19 @@ bypass_load_pool() {
 
 # Build the whole ocserv_bypass table (pool sets, source sets in per-user mode,
 # and the prerouting marking chain) from state. auto-merge absorbs the overlaps
-# and duplicates that merged multi-source lists inevitably contain.
+# and duplicates that merged multi-source lists inevitably contain. Each pool
+# marks with its target's fwmark (from bypass_targets); the accept verdict makes
+# the FIRST matching pool win when a destination sits in several of a user's
+# pools with different targets.
 bypass_load_table() {
     _bp_mode="$(cat "$vpngw_state_dir/bypass_mode")"
     _bp_sets=""
     _bp_rules=""
     while read -r _bp_p; do
         [ -n "$_bp_p" ] || continue
+        _bp_mark="$(awk -v p="$_bp_p" '$1 == p { print $3; exit }' \
+            "$vpngw_state_dir/bypass_targets" 2>/dev/null)"
+        [ -n "$_bp_mark" ] || _bp_mark="$((vpn_bypass_mark))"
         _bp_sets="$_bp_sets
     set pool_${_bp_p}_v4 { type ipv4_addr; flags interval; auto-merge; }
     set pool_${_bp_p}_v6 { type ipv6_addr; flags interval; auto-merge; }"
@@ -375,12 +387,12 @@ bypass_load_table() {
     set users_${_bp_p}_v4 { type ipv4_addr; }
     set users_${_bp_p}_v6 { type ipv6_addr; }"
             _bp_rules="$_bp_rules
-        iifname \"$vpn_ifname\" ip saddr @users_${_bp_p}_v4 ip daddr @pool_${_bp_p}_v4 meta mark set $vpn_bypass_mark
-        iifname \"$vpn_ifname\" ip6 saddr @users_${_bp_p}_v6 ip6 daddr @pool_${_bp_p}_v6 meta mark set $vpn_bypass_mark"
+        iifname \"$vpn_ifname\" ip saddr @users_${_bp_p}_v4 ip daddr @pool_${_bp_p}_v4 meta mark set $_bp_mark accept
+        iifname \"$vpn_ifname\" ip6 saddr @users_${_bp_p}_v6 ip6 daddr @pool_${_bp_p}_v6 meta mark set $_bp_mark accept"
         else
             _bp_rules="$_bp_rules
-        iifname \"$vpn_ifname\" ip saddr $vpn_subnet ip daddr @pool_${_bp_p}_v4 meta mark set $vpn_bypass_mark
-        iifname \"$vpn_ifname\" ip6 saddr $ipv6_subnet ip6 daddr @pool_${_bp_p}_v6 meta mark set $vpn_bypass_mark"
+        iifname \"$vpn_ifname\" ip saddr $vpn_subnet ip daddr @pool_${_bp_p}_v4 meta mark set $_bp_mark accept
+        iifname \"$vpn_ifname\" ip6 saddr $ipv6_subnet ip6 daddr @pool_${_bp_p}_v6 meta mark set $_bp_mark accept"
         fi
     done < "$vpngw_state_dir/bypass_pools"
     nft delete table inet ocserv_bypass 2>/dev/null || true
@@ -614,12 +626,45 @@ vpngw_killswitch_rules() {
         [ -n "$_sub4" ] || _sub4="-"
         [ -n "$_sub6" ] || _sub6="-"
     fi
-    # Destination-bypass traffic carries our fwmark (set in ocserv_bypass
-    # prerouting only for pool-matched client traffic) and exits via the main
-    # table. Accept it FIRST: a pool match is an explicit go-direct instruction
-    # and wins over next-hop guards and blocked families.
-    if [ -f "$vpngw_state_dir/bypass_pools" ]; then
-        printf 'meta mark %s accept\n' "$vpn_bypass_mark"
+    # Destination-bypass traffic carries a per-target fwmark (set in
+    # ocserv_bypass prerouting only for pool-matched client traffic). Handle
+    # the marks FIRST: a pool match is an explicit instruction and wins over
+    # next-hop guards and blocked families. "direct" marks exit via the main
+    # table and are accepted; a gateway-target mark gets the same next-hop
+    # guard as the gateway's own users (and a reject for a family the target
+    # gateway blocks); "block" marks are rejected outright - they have no
+    # policy rule, so this reject is what enforces the target.
+    if [ -f "$vpngw_state_dir/bypass_targets" ]; then
+        awk '!seen[$3]++ { print $2, $3 }' "$vpngw_state_dir/bypass_targets" \
+        | while read -r _bt _bm; do
+            case "$_bt" in
+                direct)
+                    printf 'meta mark %s accept\n' "$_bm"
+                    ;;
+                block)
+                    printf 'meta mark %s reject with icmpx type admin-prohibited\n' "$_bm"
+                    ;;
+                *)
+                    _btl="$(awk -v n="$_bt" '$1 == n { print; exit }' \
+                        "$vpngw_state_dir/gateways" 2>/dev/null)"
+                    [ -n "$_btl" ] || continue
+                    _btg4="$(echo "$_btl" | awk '{ print $3 }')"
+                    _btg6="$(echo "$_btl" | awk '{ print $4 }')"
+                    if [ "$_btg4" != "block" ]; then
+                        printf 'meta mark %s oifname "%s" rt ip nexthop != %s drop\n' "$_bm" "$wan_if" "$_btg4"
+                        printf 'meta nfproto ipv4 meta mark %s oifname "%s" accept\n' "$_bm" "$wan_if"
+                    else
+                        printf 'meta nfproto ipv4 meta mark %s reject with icmp type admin-prohibited\n' "$_bm"
+                    fi
+                    if [ "$_btg6" != "block" ]; then
+                        printf 'meta mark %s oifname "%s" rt ip6 nexthop != %s drop\n' "$_bm" "$wan_if" "$_btg6"
+                        printf 'meta nfproto ipv6 meta mark %s oifname "%s" accept\n' "$_bm" "$wan_if"
+                    else
+                        printf 'meta nfproto ipv6 meta mark %s reject with icmpv6 type admin-prohibited\n' "$_bm"
+                    fi
+                    ;;
+            esac
+        done
     fi
     if [ -f "$vpngw_state_dir/gateways" ]; then
         while read -r _name _tbl _g4 _g6; do

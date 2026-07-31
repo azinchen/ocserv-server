@@ -217,7 +217,7 @@ To apply on every save automatically, set **`VPN_USER_GATEWAY_WATCH=1`** — a s
 
 ## Destination bypass pools
 
-Gateway mode is source-routed: *who* the client is decides where their traffic exits. Bypass pools add a **destination** dimension: traffic to addresses in a named pool exits **direct** (the container's default route / ISP) even for users whose everything-else goes to a gateway.
+Gateway mode is source-routed: *who* the client is decides where their traffic exits. Bypass pools add a **destination** dimension: traffic to addresses in a named pool escapes the user's gateway and goes to the pool's **target** — **direct** (the container's default route / ISP, the default), a **named gateway**, or **block** (rejected) — even for users whose everything-else goes to a gateway.
 
 The motivating setup is a **cascade**: the first ocserv node sits in Russia and forwards clients to an upstream node abroad (`VPN_GATEWAY`/`VPN_GATEWAYS`) — but traffic to Russian destinations should leave the first node directly, both for speed and because RU sites often block foreign exit IPs. With an `ru` pool attached, only non-RU traffic takes the upstream tunnel.
 
@@ -248,15 +248,35 @@ environment:
 
 A user's pools resolve as: explicit `VPN_USER_BYPASS` entry (`none` = no bypass at all) → their named gateway's `VPN_GATEWAYS_BYPASS` pools → for unmapped users, `VPN_GATEWAY_BYPASS`. `direct` users inherit nothing (they are already direct). Referencing an undefined gateway, an invalid pool name, or attaching per-user bypass without the per-user hook fails startup loudly.
 
-The per-user map can also live in a file (**`VPN_USER_BYPASS_FILE`**), like the gateway user map — and like it, the file is **hot-reloadable**: edit it and run `vpngw-reload` (or set **`VPN_USER_BYPASS_WATCH=1`** to apply on every save), and connected sessions are reconciled **in place** — a user gains/loses their pools without reconnecting. The reload validates the whole map first (an entry naming an unknown pool aborts it, sessions untouched). What stays fixed at startup: the pool *set* itself (each pool's nft sets and marking rules) and the env-only attachments (`VPN_GATEWAY_BYPASS`, `VPN_GATEWAYS_BYPASS`); pool *contents* hot-reload separately (below).
+The per-user map can also live in a file (**`VPN_USER_BYPASS_FILE`**), like the gateway user map — and like it, the file is **hot-reloadable**: edit it and run `vpngw-reload` (or set **`VPN_USER_BYPASS_WATCH=1`** to apply on every save), and connected sessions are reconciled **in place** — a user gains/loses their pools without reconnecting. The reload validates the whole map first (an entry naming an unknown pool aborts it, sessions untouched). What stays fixed at startup: the pool *set* itself (each pool's nft sets and marking rules), each pool's *target* (`VPN_BYPASS_TARGETS`), and the env-only attachments (`VPN_GATEWAY_BYPASS`, `VPN_GATEWAYS_BYPASS`); pool *contents* hot-reload separately (below).
+
+### Pool targets
+
+By default a matched destination exits **direct**. **`VPN_BYPASS_TARGETS`** changes where a pool's traffic goes, per pool:
+
+```yaml
+environment:
+  - VPN_GATEWAYS=nl=172.28.0.2,us=172.28.0.4
+  - VPN_USER_GATEWAY=alice=nl
+  - VPN_GATEWAYS_BYPASS=nl=ru+streaming+ads
+  - VPN_BYPASS_TARGETS=streaming=us,ads=block   # ru stays direct (the default)
+```
+
+A target is:
+
+- **`direct`** — the default for every pool not listed: matched traffic exits via the container's default route (the ISP).
+- **A `VPN_GATEWAYS` name** — matched traffic takes *that* gateway instead of the session's own: in the example, Alice's traffic normally exits via `nl`, but streaming destinations go out through `us`. Only the families the target gateway routes apply — a family it `block`s (or an IPv6 it simply doesn't have) is rejected for pool traffic too, fail-closed.
+- **`block`** (alias `drop`) — matched destinations are rejected (ICMP admin-prohibited, so clients fail fast): a destination blocklist, e.g. an `ads` pool.
+
+An unknown target, or a target for a pool that is attached nowhere, fails startup loudly. The target is a property of the *pool* and fixed at startup, like the pool set itself. If a destination is in several of a user's pools with different targets, the **first pool wins** (marking-rule order: pools in the order they are first attached — `VPN_GATEWAY_BYPASS`, then `VPN_GATEWAYS_BYPASS`, then `VPN_USER_BYPASS`).
 
 ### How it works
 
-`init-vpngw` builds a dedicated nft table `inet ocserv_bypass`: one interval set per pool plus, per pool, a source set of subscribed session addresses (maintained by the same connect/disconnect hook as the gateway rules). A prerouting chain fwmarks (default `0xbc`) client packets whose destination is in one of their pools, and a policy rule at priority `VPN_BYPASS_RULE_PRIO` (default `800` — stronger than the `900` per-user and `1000` subnet rules) sends marked packets to the **main** routing table. The kill switch accepts the mark explicitly as its first rule.
+`init-vpngw` builds a dedicated nft table `inet ocserv_bypass`: one interval set per pool plus, per pool, a source set of subscribed session addresses (maintained by the same connect/disconnect hook as the gateway rules). A prerouting chain fwmarks client packets whose destination is in one of their pools with the pool's **target mark** — `VPN_BYPASS_MARK` (default `0xbc`) for `direct`, base+1, base+2… for every other distinct target. Policy rules at priority `VPN_BYPASS_RULE_PRIO` (default `800` — stronger than the `900` per-user and `1000` subnet rules) send each mark to its target's routing table: **main** for `direct`, the gateway's own table for a gateway target, and none at all for `block` — blocked marks are rejected by the kill switch. The kill switch handles all the marks explicitly as its first rules (accept for `direct`, the usual next-hop guard for a gateway target, reject for `block`).
 
 Two consequences worth knowing:
 
-- **A pool match wins over everything**, including a `block`ed family: on an RU node whose upstream has no IPv6, a user's IPv6 is normally rejected fail-closed — but IPv6 traffic to pooled RU destinations still exits direct. A pool entry is an explicit "go direct" instruction.
+- **A pool match wins over everything**, including a `block`ed family: on an RU node whose upstream has no IPv6, a user's IPv6 is normally rejected fail-closed — but IPv6 traffic to pooled RU destinations still exits direct. A pool entry is an explicit routing instruction (and with a `block` target, the override runs the other way: pooled destinations are rejected even for users whose gateway would route them).
 - **Matching is by IP only.** A Russian service fronted by a foreign CDN resolves to non-RU addresses and still takes the tunnel; DNS-based steering is out of scope.
 
 If registering a session's bypass membership fails on connect, the session is **rejected** (same fail-closed stance as the gateway rules).
@@ -276,7 +296,7 @@ Inspect the live state:
 
 ```bash
 docker exec <container> nft list table inet ocserv_bypass   # pools + subscribed sessions
-docker exec <container> ip rule                             # the fwmark rule at prio 800
+docker exec <container> ip rule                             # the fwmark rules at prio 800
 ```
 
 ### Fetching lists automatically
