@@ -2,7 +2,7 @@
 
 ocserv speaks the OpenConnect / Cisco AnyConnect SSL-VPN protocol, so a wide range of clients work. The connection target is your server URL — **including the camouflage secret** if [camouflage](Camouflage-Mode) is enabled.
 
-> If camouflage is on, every example below must use `https://host:port/?your-secret` as the server URL (except OpenWrt, where the secret goes in the `usergroup` option — see that section).
+> If camouflage is on, every example below must use `https://host:port/?your-secret` as the server URL. (On OpenWrt the LuCI server field may not accept a URL — use the `usergroup` option or edit the config file directly; see that section.)
 
 ## OpenConnect (Linux / macOS / BSD)
 
@@ -74,8 +74,8 @@ config interface 'oc'
 	option port '8443'
 	option username 'alice'
 	option password 'S3cret'
-	# Camouflage: the secret cannot go in the server field on OpenWrt -
-	# it is the URL path ("usergroup"), question mark included:
+	# Camouflage: put the secret in the usergroup option (it becomes the
+	# URL path), question mark included:
 	option usergroup '?your-secret'
 	# Self-signed cert: pin its SHA256 fingerprint instead of disabling verification
 	#option serverhash 'AABBCC...'
@@ -84,6 +84,8 @@ config interface 'oc'
 ```
 
 The protocol defaults to AnyConnect — exactly what ocserv speaks, so there is nothing else to set.
+
+> **Camouflage on OpenWrt:** the LuCI form's server field may not accept a full URL (`https://host:port/?your-secret`) — it expects a bare hostname. Two ways around it: keep a bare `option server` and carry the secret in **`option usergroup '?your-secret'`** (shown above, works everywhere), or edit `/etc/config/network` directly and put the full URL into `option server` — the config file itself is not restricted by the form validation, and the underlying `openconnect` client accepts a URL as the server.
 
 **3. Put the interface in the `wan` firewall zone** so LAN traffic is forwarded and masqueraded into the tunnel — in LuCI: *Network → Firewall → wan → Covered networks → add `oc`*, or:
 
