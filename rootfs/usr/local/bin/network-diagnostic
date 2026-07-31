@@ -198,6 +198,9 @@ if [ "$MODE" = "basic" ]; then
     _direct=""
     [ -n "$_body" ] && _direct="$(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
     echo "ocserv: $SERVER_STATE, $CONNECTED client(s); direct egress: ${_direct:-UNREACHABLE}"
+    _body6="$(fetch_url "$TRACE6")" || _body6=""
+    [ -n "$_body6" ] \
+        && echo "direct egress v6: $(trace_field "$_body6" ip) ($(trace_field "$_body6" loc))"
     if [ "$GW_ACTIVE" = 1 ] && [ -f "$vpngw_state_dir/gateways" ] && diag_probe_arm >/dev/null; then
         while read -r _name _tbl _g4 _g6; do
             [ -n "$_name" ] || continue
@@ -205,6 +208,10 @@ if [ "$MODE" = "basic" ]; then
                 _r="$(probe_via_table "$_tbl" 4)" || _r="UNREACHABLE"
             else
                 _r="v4 blocked"
+            fi
+            if [ "$_g6" != "block" ]; then
+                _r6="$(probe_via_table "$_tbl" 6)" || _r6="UNREACHABLE"
+                _r="$_r / v6: $_r6"
             fi
             echo "gateway $_name: $_r"
         done < "$vpngw_state_dir/gateways"
@@ -232,14 +239,24 @@ occtl_show() {
     printf '%s\n' "$_oc"
 }
 
-# "assigned-vpn-ip client-public-ip" pairs from occtl's user table. Column
-# positions are taken from the header line (the row starting with "id"), so a
-# reordered layout in a future occtl still parses; unparseable output just
-# yields no pairs and the caller falls back to "-".
+# "assigned-vpn-ip client-public-ip device since" per session from occtl's
+# user table. Column positions are taken from the header line (the row
+# starting with "id"), so a reordered layout in a future occtl still parses;
+# unparseable output just yields no lines and the caller falls back to "-".
 occtl_users_map() {
     occtl show users 2>/dev/null | awk '
-        $1 == "id" { for (i = 1; i <= NF; i++) { if ($i == "ip") ipc = i; if ($i == "vpn-ip") vc = i }; next }
-        ipc && vc && $1 ~ /^[0-9]+$/ && NF >= vc { print $vc, $ipc }'
+        $1 == "id" {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "ip") ipc = i
+                if ($i == "vpn-ip") vc = i
+                if ($i == "device") dc = i
+                if ($i == "since") sc = i
+            }
+            next
+        }
+        ipc && vc && $1 ~ /^[0-9]+$/ && NF >= vc {
+            print $vc, $ipc, (dc ? $dc : "-"), (sc ? $sc : "-")
+        }'
 }
 
 section "occtl show status"
@@ -279,6 +296,7 @@ CONF_NET="$(conf_get ipv4-network)"
 CONF_MASK="$(conf_get ipv4-netmask)"
 echo "tcp-port / udp-port            : $(conf_get tcp-port) / $(conf_get udp-port)"
 echo "ipv4-network / netmask         : ${CONF_NET:-<unset>} / ${CONF_MASK:-<unset>}"
+echo "ipv6-network                   : $(conf_get ipv6-network)"
 echo "device                         : $(conf_get device)"
 echo "tunnel-all-dns                 : $(conf_get tunnel-all-dns)"
 echo "camouflage                     : $(conf_get camouflage)"
@@ -314,6 +332,33 @@ else
     else
         echo "(no named gateways)"
     fi
+
+    # DNS-named gateways: the routing tables pin the address resolved at
+    # startup (or last vpngw-gw-resolve pass). Resolve each name NOW and flag
+    # a pinned next-hop the name no longer resolves to - the classic
+    # sidecar-restarted-with-a-new-IP failure.
+    dns_check() { # $1 = label, $2 = family 4|6, $3 = source token, $4 = pinned addr
+        gw_is_literal "$3" && return 0
+        _dc_now="$(gw_resolve_all "-$2" "$3")"
+        if [ -z "$_dc_now" ]; then
+            echo "[warn] $1: DNS name '$3' does not resolve right now (routing keeps pinned $4)"
+        elif printf '%s\n' "$_dc_now" | grep -qxF "$4"; then
+            echo "[ok] $1: '$3' resolves to the pinned next-hop $4"
+        else
+            echo "[warn] $1: '$3' now resolves to $(printf '%s\n' "$_dc_now" | head -1) but routing pins $4 - run vpngw-gw-resolve (or set VPN_GATEWAYS_RESOLVE_INTERVAL)"
+        fi
+    }
+    if [ -f "$vpngw_state_dir/gateways.src" ]; then
+        while read -r _name _s4 _s6; do
+            [ -n "$_name" ] || continue
+            _pin4="$(awk -v n="$_name" '$1 == n { print $3; exit }' "$vpngw_state_dir/gateways")"
+            _pin6="$(awk -v n="$_name" '$1 == n { print $4; exit }' "$vpngw_state_dir/gateways")"
+            dns_check "gateway $_name v4" 4 "$_s4" "$_pin4"
+            dns_check "gateway $_name v6" 6 "$_s6" "$_pin6"
+        done < "$vpngw_state_dir/gateways.src"
+    fi
+    [ -n "$vpn_gateway" ] && dns_check "default gateway v4" 4 "$vpn_gateway" "${SUB4:--}"
+    [ -n "$vpn_gateway6" ] && dns_check "default gateway v6" 6 "$vpn_gateway6" "${SUB6:--}"
     echo
 
     section "Gateway egress probes (next-hop ping + public IP via each table)"
@@ -321,6 +366,8 @@ else
         # Direct baseline first (main table, the container's own egress)
         _r="$(probe_via_table main 4)" || _r="UNREACHABLE"
         printf '%-22s : %s\n' "direct (main table)" "$_r"
+        _r="$(probe_via_table main 6)" || _r="no IPv6 egress"
+        printf '%-22s : %s\n' "direct v6 (main table)" "$_r"
         # Subnet default
         if [ -n "${SUB4:-}" ] && [ "$SUB4" != "-" ] && [ "$SUB4" != "block" ]; then
             printf '%-22s : next-hop %s\n' "default (table $vpn_gateway_table)" "$(ping_probe 4 "$SUB4")"
@@ -385,25 +432,32 @@ fi
 # ---- Connected sessions -----------------------------------------------------
 
 section "Connected sessions"
-occtl_show show users
 if [ -d "$vpngw_state_dir/sessions" ]; then
-    echo
-    echo "clients:"
-    printf '%-18s %-24s %-18s %-10s %s\n' "user" "assigned IP" "client IP" "gateway" "bypass"
+    # One merged table per client (session record + occtl details); the raw
+    # occtl table would only duplicate these rows.
+    printf '%-16s %-16s %-16s %-7s %-8s %-9s %s\n' \
+        "user" "assigned IP" "client IP" "device" "since" "gateway" "bypass"
     OCCTL_MAP="$(occtl_users_map)"
     _found=0
     for _rec in "$vpngw_state_dir"/sessions/*; do
         [ -f "$_rec" ] || continue
         read -r _u _g _ip4 _ip6 _bp < "$_rec" || continue
         _found=1
-        _pub="$(printf '%s\n' "$OCCTL_MAP" | awk -v v="$_ip4" '$1 == v { print $2; exit }')"
+        _oline="$(printf '%s\n' "$OCCTL_MAP" | awk -v v="$_ip4" '$1 == v { print; exit }')"
+        _pub="$(printf '%s' "$_oline" | awk '{ print $2 }')"
+        _dev="$(printf '%s' "$_oline" | awk '{ print $3 }')"
+        _since="$(printf '%s' "$_oline" | awk '{ print $4 }')"
         _int="$_ip4"
         [ "${_ip6:--}" != "-" ] && _int="$_ip4,$_ip6"
         _bpp=""
         [ "${_bp:--}" != "-" ] && _bpp="$(pools_with_targets "$(printf '%s' "$_bp" | tr '+' ' ')")"
-        printf '%-18s %-24s %-18s %-10s %s\n' "$_u" "$_int" "${_pub:--}" "$_g" "$_bpp"
+        printf '%-16s %-16s %-16s %-7s %-8s %-9s %s\n' \
+            "$_u" "$_int" "${_pub:--}" "${_dev:--}" "${_since:--}" "$_g" "$_bpp"
     done
     [ "$_found" = 1 ] || echo "(none connected)"
+else
+    # No per-user hook, so no session records - occtl is the only source
+    occtl_show show users
 fi
 echo
 
@@ -444,11 +498,13 @@ echo
 section "Routing tables"
 echo "main:"
 ip route show 2>/dev/null | sed 's/^/  /'
+ip -6 route show 2>/dev/null | sed 's/^/  /'
 if [ "$GW_ACTIVE" = 1 ]; then
     # Table 100 only exists when a subnet default gateway is routed
     if [ "${SUB4:--}" != "-" ] || { [ "${SUB6:--}" != "-" ] && [ "${SUB6:-}" != "block" ] && [ "${SUB6:-}" != "direct" ]; }; then
         echo "table $vpn_gateway_table (default gateway):"
         ip route show table "$vpn_gateway_table" 2>/dev/null | sed 's/^/  /' || true
+        ip -6 route show table "$vpn_gateway_table" 2>/dev/null | sed 's/^/  /' || true
     fi
     if [ -f "$vpngw_state_dir/gateways" ]; then
         while read -r _name _tbl _ _; do
@@ -482,11 +538,16 @@ fi
 # ---- Direct connectivity ----------------------------------------------------
 
 section "Connectivity (direct / main table)"
-echo "ip_forward sysctl              : $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)"
+echo "ip_forward / ipv6 forwarding   : $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null) / $(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)"
 if ping -c 2 -W 3 "$TEST4" >/dev/null 2>&1; then
     echo "[ok] ping $TEST4"
 else
     echo "[warn] ping $TEST4 failed"
+fi
+if ping -6 -c 2 -W 3 "$TEST6" >/dev/null 2>&1 || ping6 -c 2 -W 3 "$TEST6" >/dev/null 2>&1; then
+    echo "[ok] ping $TEST6"
+else
+    echo "[info] ping $TEST6 failed (no IPv6 egress?)"
 fi
 DNS_RES="$(getent hosts one.one.one.one 2>/dev/null | awk '{ print $1; exit }')"
 if [ -n "$DNS_RES" ]; then
@@ -496,9 +557,15 @@ else
 fi
 _body="$(fetch_url "$TRACE4")" || _body=""
 if [ -n "$_body" ]; then
-    echo "[ok] public IP (direct)        : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+    echo "[ok] public IPv4 (direct)      : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
 else
-    echo "[warn] could not fetch public IP"
+    echo "[warn] could not fetch public IPv4"
+fi
+_body="$(fetch_url "$TRACE6")" || _body=""
+if [ -n "$_body" ]; then
+    echo "[ok] public IPv6 (direct)      : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+else
+    echo "[info] no public IPv6 (fine unless clients are meant to use IPv6)"
 fi
 echo
 
