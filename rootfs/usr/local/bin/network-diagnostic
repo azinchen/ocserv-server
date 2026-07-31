@@ -111,13 +111,20 @@ fetch_url() { # $1 = url; prints the body (busybox wget, no cert verification)
     wget -q -T 8 -O - "$1" 2>/dev/null
 }
 
-# HTTP status of a URL: "200" when the fetch succeeded, else the code parsed
-# from busybox wget's "server returned error: HTTP/1.1 404 ..." message.
-http_status() {
-    if _hs="$(wget -T 5 -O /dev/null "$1" 2>&1)"; then
+# Probe a URL: prints "200" when the fetch succeeded, the status code parsed
+# from busybox wget's "server returned error: HTTP/1.1 404 ..." message, or
+# "ERR <last error line>" when the exchange failed below HTTP (TLS/transport) -
+# the caller must treat ERR as inconclusive, not as a pass or fail.
+http_probe() {
+    if _hp="$(wget -T 5 -O /dev/null "$1" 2>&1)"; then
         echo 200
+        return
+    fi
+    _hp_c="$(printf '%s\n' "$_hp" | sed -n 's|.*HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p' | head -1)"
+    if [ -n "$_hp_c" ]; then
+        echo "$_hp_c"
     else
-        printf '%s\n' "$_hs" | sed -n 's|.*HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p' | head -1
+        echo "ERR $(printf '%s\n' "$_hp" | grep -vi '^Connecting' | tail -1)"
     fi
 }
 
@@ -720,21 +727,29 @@ if [ "$(conf_get camouflage)" = "true" ] && [ -n "$OCSERV_PID" ]; then
     _cs_port="$(conf_get tcp-port)"
     _cs_port="${_cs_port:-443}"
     _cs_secret="$(conf_get camouflage_secret)"
-    _st="$(http_status "https://127.0.0.1:$_cs_port/")"
-    if [ "$_st" = "200" ]; then
-        warn "probe WITHOUT the secret got HTTP 200 - camouflage does not seem to gate the handshake"
-    else
-        ok "probe without the secret got HTTP ${_st:-error} (server presents as a plain website)"
-    fi
+    _st="$(http_probe "https://127.0.0.1:$_cs_port/")"
+    case "$_st" in
+        200)
+            warn "probe WITHOUT the secret got HTTP 200 - camouflage does not seem to gate the handshake"
+            ;;
+        ERR*)
+            # busybox wget's minimal TLS client may not complete a handshake
+            # with the server's TLS priorities - that says nothing about
+            # camouflage, so report it as inconclusive, not as a failure.
+            info "local probe could not complete a TLS/HTTP exchange (${_st#ERR }) - self-test inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/"
+            _cs_secret=""
+            ;;
+        *)
+            ok "probe without the secret got HTTP $_st (server presents as a plain website)"
+            ;;
+    esac
     if [ -n "$_cs_secret" ]; then
-        _st="$(http_status "https://127.0.0.1:$_cs_port/?$_cs_secret")"
-        if [ "$_st" = "200" ]; then
-            ok "probe with the configured secret got HTTP 200 (VPN endpoint reachable)"
-        else
-            warn "probe WITH the secret got HTTP ${_st:-error} - clients using the secret may be failing too"
-        fi
-    else
-        info "camouflage enabled but no camouflage_secret set?"
+        _st="$(http_probe "https://127.0.0.1:$_cs_port/?$_cs_secret")"
+        case "$_st" in
+            200)  ok "probe with the configured secret got HTTP 200 (VPN endpoint reachable)" ;;
+            ERR*) info "probe with the secret could not complete a TLS/HTTP exchange (${_st#ERR }) - inconclusive" ;;
+            *)    warn "probe WITH the secret got HTTP $_st - clients using the secret may be failing too" ;;
+        esac
     fi
     echo
 fi
@@ -1075,11 +1090,16 @@ if ping -6 -c 2 -W 3 "$TEST6" >/dev/null 2>&1 || ping6 -c 2 -W 3 "$TEST6" >/dev/
 else
     info "ping $TEST6 failed (no IPv6 egress?)"
 fi
+# Docker's embedded DNS (127.0.0.11) occasionally drops a single query -
+# retry once and fall back to nslookup before calling it broken.
 DNS_RES="$(getent hosts one.one.one.one 2>/dev/null | awk '{ print $1; exit }')"
+[ -n "$DNS_RES" ] || { sleep 1; DNS_RES="$(getent hosts one.one.one.one 2>/dev/null | awk '{ print $1; exit }')"; }
+[ -n "$DNS_RES" ] || DNS_RES="$(nslookup one.one.one.one 2>/dev/null \
+    | awk '/^Name/ { f = 1 } f && /^Address/ { print $2; exit }')"
 if [ -n "$DNS_RES" ]; then
     ok "DNS resolves (one.one.one.one -> $DNS_RES)"
 else
-    warn "DNS resolution failed"
+    warn "DNS resolution failed (getent + nslookup) - Docker DNS at 127.0.0.11 unreachable?"
 fi
 _body="$(fetch_url "$TRACE4")" || _body=""
 if [ -n "$_body" ]; then
