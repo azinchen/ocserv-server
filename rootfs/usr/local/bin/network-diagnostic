@@ -1,0 +1,510 @@
+#!/bin/sh
+# shellcheck shell=sh
+#
+# network-diagnostic: POSIX sh diagnostics for the ocserv-server container.
+# Modelled on the nordvpn-wg sibling image's tool of the same name.
+#
+# Usage: network-diagnostic [--basic|-b] | [--full|-f] | [--help|-h]
+# Default mode is --full.
+#
+# Shows: server status, effective configuration, gateway/bypass state and
+# per-user maps, connected sessions, per-gateway egress probes (public IP as
+# seen through each gateway), destination-bypass pool state, policy routing
+# and the nftables tables.
+#
+# Egress probes: locally generated test traffic to $TEST4:443 is fwmarked in a
+# temporary route-type output chain (table inet ocserv_diag, mark $DIAG_MARK),
+# masqueraded by mark, and steered with an "fwmark -> <table>" policy rule at
+# priority $DIAG_RULE_PRIO (stronger than every vpngw rule). That exercises the
+# same routing table and egress path client traffic uses, without touching any
+# live rule; everything is removed on exit. Forwarded (client) traffic is never
+# marked - the chain hooks output only.
+
+set -u
+
+MODE="full"
+
+print_usage()
+{
+    cat <<'EOF'
+Usage: network-diagnostic [options]
+
+Options:
+    -b, --basic   One-line summary: server state, clients, egress public IPs
+    -f, --full    Full diagnostics (default)
+    -h, --help    Show this help
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -b|--basic) MODE="basic" ;;
+        -f|--full)  MODE="full"  ;;
+        -h|--help)  print_usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; print_usage; exit 2 ;;
+    esac
+    shift
+done
+
+. /usr/local/bin/backend-functions
+
+TEST4="1.1.1.1"
+TEST6="2606:4700:4700::1111"
+TRACE4="https://1.1.1.1/cdn-cgi/trace"
+TRACE6="https://[2606:4700:4700::1111]/cdn-cgi/trace"
+DIAG_MARK="0xd1a6"
+DIAG_RULE_PRIO=790
+
+# ---- Small helpers ----------------------------------------------------------
+
+hr() { echo "================================================================"; }
+section() { echo "### $1"; }
+
+conf_get() { # $1 = directive; prints its value from ocserv.conf (first match)
+    [ -f "$ocserv_config" ] || return 0
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$ocserv_config" \
+        | head -1 | sed 's/[[:space:]]*#.*//; s/"//g'
+}
+
+mask2len() { # 255.255.255.0 -> 24
+    echo "$1" | awk -F. '{ n = 0
+        for (i = 1; i <= 4; i++) { x = $i; while (x > 0) { n += x % 2; x = int(x / 2) } }
+        print n }'
+}
+
+fetch_url() { # $1 = url; prints the body (busybox wget, no cert verification)
+    wget -q -T 8 -O - "$1" 2>/dev/null
+}
+
+trace_field() { # $1 = trace body, $2 = field; cdn-cgi/trace is "key=value" lines
+    printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
+}
+
+# Count entries of an nft set without dumping it (country pools are huge).
+# Interval sets report merged intervals, not source lines. Strip the
+# "elements = {" framing before counting - every real element contains a
+# digit or a colon, the framing words do not.
+nft_set_count() { # $1 = set name (in table inet ocserv_bypass)
+    nft list set inet ocserv_bypass "$1" 2>/dev/null \
+        | sed -n '/elements = {/,/}/p' | sed 's/.*{//; s/}.*//' | tr ',' '\n' \
+        | grep -c '[0-9:]' || true
+}
+
+# ---- Egress probe machinery -------------------------------------------------
+# Armed once, cleaned up on exit. probe_via_table() steers the marked probe
+# traffic through one routing table at a time.
+
+PROBES_ARMED=0
+
+diag_probe_cleanup() {
+    [ "$PROBES_ARMED" = 1 ] || return 0
+    _n=0
+    while [ "$_n" -lt 8 ] && ip rule del priority "$DIAG_RULE_PRIO" 2>/dev/null; do
+        _n=$((_n + 1))
+    done
+    _n=0
+    while [ "$_n" -lt 8 ] && ip -6 rule del priority "$DIAG_RULE_PRIO" 2>/dev/null; do
+        _n=$((_n + 1))
+    done
+    nft delete table inet ocserv_diag 2>/dev/null || true
+    PROBES_ARMED=0
+}
+
+diag_probe_arm() {
+    diag_probe_cleanup
+    if nft -f - <<EOF
+table inet ocserv_diag {
+    chain output {
+        type route hook output priority mangle; policy accept;
+        ip daddr $TEST4 tcp dport 443 meta mark set $DIAG_MARK
+        ip6 daddr $TEST6 tcp dport 443 meta mark set $DIAG_MARK
+    }
+    chain postrouting {
+        type nat hook postrouting priority 110; policy accept;
+        meta mark $DIAG_MARK masquerade
+    }
+}
+EOF
+    then
+        PROBES_ARMED=1
+        trap diag_probe_cleanup EXIT INT TERM
+        return 0
+    fi
+    echo "[warn] could not install the probe chain; per-gateway probes skipped"
+    return 1
+}
+
+probe_via_table() { # $1 = table (or "main"), $2 = family 4|6; prints "IP (LOC)" on success
+    if [ "$2" = 4 ]; then
+        ip rule add fwmark "$DIAG_MARK" lookup "$1" priority "$DIAG_RULE_PRIO" 2>/dev/null || return 1
+        _pt_body="$(fetch_url "$TRACE4")" || _pt_body=""
+        ip rule del priority "$DIAG_RULE_PRIO" 2>/dev/null
+    else
+        ip -6 rule add fwmark "$DIAG_MARK" lookup "$1" priority "$DIAG_RULE_PRIO" 2>/dev/null || return 1
+        _pt_body="$(fetch_url "$TRACE6")" || _pt_body=""
+        ip -6 rule del priority "$DIAG_RULE_PRIO" 2>/dev/null
+    fi
+    [ -n "$_pt_body" ] || return 1
+    _pt_ip="$(trace_field "$_pt_body" ip)"
+    _pt_loc="$(trace_field "$_pt_body" loc)"
+    [ -n "$_pt_ip" ] || return 1
+    printf '%s (%s)\n' "$_pt_ip" "${_pt_loc:-??}"
+}
+
+ping_probe() { # $1 = family 4|6, $2 = address; prints ok/fail text
+    if [ "$1" = 4 ]; then
+        if ping -c 1 -W 2 "$2" >/dev/null 2>&1; then echo "reachable"; else echo "NO REPLY"; fi
+    else
+        if ping -6 -c 1 -W 2 "$2" >/dev/null 2>&1 \
+            || ping6 -c 1 -W 2 "$2" >/dev/null 2>&1; then echo "reachable"; else echo "NO REPLY"; fi
+    fi
+}
+
+# Annotate a pool list with targets: "ru streaming" -> "ru->direct streaming->us"
+pools_with_targets() {
+    _pw_out=""
+    for _pw_p in $1; do
+        _pw_t="$(awk -v p="$_pw_p" '$1 == p { print $2; exit }' \
+            "$vpngw_state_dir/bypass_targets" 2>/dev/null)"
+        _pw_out="$_pw_out ${_pw_p}->${_pw_t:-direct}"
+    done
+    printf '%s\n' "${_pw_out# }"
+}
+
+# ---- Gather basic facts -----------------------------------------------------
+
+OCSERV_PID="$(pidof ocserv 2>/dev/null | awk '{ print $1 }')" || OCSERV_PID=""
+if [ -n "$OCSERV_PID" ]; then
+    SERVER_STATE="running (pid $OCSERV_PID)"
+else
+    SERVER_STATE="NOT RUNNING"
+fi
+
+CONNECTED=0
+if [ -d "$vpngw_state_dir/sessions" ]; then
+    CONNECTED="$(find "$vpngw_state_dir/sessions" -type f 2>/dev/null | wc -l)"
+elif [ -n "$OCSERV_PID" ]; then
+    # No per-user hook: count from occtl (drop header/separator lines)
+    CONNECTED="$(occtl show users 2>/dev/null | awk 'NR > 1 && NF > 3' | wc -l)"
+fi
+
+GW_ACTIVE=0
+[ -d "$vpngw_state_dir" ] && GW_ACTIVE=1
+
+# ---- Basic mode -------------------------------------------------------------
+
+if [ "$MODE" = "basic" ]; then
+    _body="$(fetch_url "$TRACE4")" || _body=""
+    _direct=""
+    [ -n "$_body" ] && _direct="$(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+    echo "ocserv: $SERVER_STATE, $CONNECTED client(s); direct egress: ${_direct:-UNREACHABLE}"
+    if [ "$GW_ACTIVE" = 1 ] && [ -f "$vpngw_state_dir/gateways" ] && diag_probe_arm >/dev/null; then
+        while read -r _name _tbl _g4 _g6; do
+            [ -n "$_name" ] || continue
+            if [ "$_g4" != "block" ]; then
+                _r="$(probe_via_table "$_tbl" 4)" || _r="UNREACHABLE"
+            else
+                _r="v4 blocked"
+            fi
+            echo "gateway $_name: $_r"
+        done < "$vpngw_state_dir/gateways"
+        diag_probe_cleanup
+    fi
+    [ -n "$OCSERV_PID" ] || exit 1
+    exit 0
+fi
+
+# ---- Full diagnostics -------------------------------------------------------
+
+hr
+echo "ocserv-server DIAG (full) : $(date -Is 2>/dev/null || date)"
+echo "Kernel                    : $(uname -r)"
+echo "ocserv version            : $(ocserv --version 2>&1 | head -1)"
+echo "Server status             : $SERVER_STATE"
+echo "Connected clients         : $CONNECTED"
+echo
+
+section "occtl show status"
+occtl show status 2>&1 || echo "[info] occtl unavailable (is ocserv running?)"
+echo
+
+section "Listening sockets"
+netstat -tuln 2>/dev/null | awk 'NR <= 2 || /LISTEN|udp/' || echo "[info] netstat unavailable"
+echo
+
+section "Effective configuration (env)"
+echo "VPN_SUBNET                     : $vpn_subnet"
+echo "WAN_IF (detected)              : $wan_if"
+echo "VPN_IF                         : $vpn_if"
+echo "MSS                            : ${tcp_mss:-<interface MTU>}"
+echo "IPV6_FORWARD / IPV6_NAT        : $ipv6_forward / $ipv6_nat"
+echo "IPV6_SUBNET                    : $ipv6_subnet"
+echo "VPN_GATEWAY / VPN_GATEWAY6     : ${vpn_gateway:-<unset>} / ${vpn_gateway6:-<unset>}"
+echo "VPN_GATEWAYS                   : ${vpn_gateways:-<unset>}"
+echo "VPN_GATEWAYS6                  : ${vpn_gateways6:-<unset>}"
+echo "VPN_GATEWAYS_FILE              : ${vpn_gateways_file:-<unset>}"
+echo "VPN_GATEWAYS_RESOLVE_INTERVAL  : $vpn_gateways_resolve_interval"
+echo "VPN_USER_GATEWAY               : ${vpn_user_gateway:-<unset>}"
+echo "VPN_USER_GATEWAY_FILE          : ${vpn_user_gateway_file:-<unset>} (watch: $vpn_user_gateway_watch)"
+echo "VPN_USER_BYPASS                : ${vpn_user_bypass:-<unset>}"
+echo "VPN_USER_BYPASS_FILE           : ${vpn_user_bypass_file:-<unset>} (watch: $vpn_user_bypass_watch)"
+echo "VPN_GATEWAY_BYPASS             : ${vpn_gateway_bypass:-<unset>}"
+echo "VPN_GATEWAYS_BYPASS            : ${vpn_gateways_bypass:-<unset>}"
+echo "VPN_BYPASS_TARGETS             : ${vpn_bypass_targets:-<unset>}"
+echo "VPN_BYPASS_POOLS_DIR           : $vpn_bypass_pools_dir (watch: $vpn_bypass_watch)"
+echo "VPN_BYPASS_SOURCES_FILE        : ${vpn_bypass_sources_file:-<unset>} (interval: $vpn_bypass_update_interval)"
+echo "CERT_WATCH / _INTERVAL         : $cert_watch / $cert_watch_interval"
+echo
+
+section "ocserv.conf key directives ($ocserv_config)"
+CONF_NET="$(conf_get ipv4-network)"
+CONF_MASK="$(conf_get ipv4-netmask)"
+echo "tcp-port / udp-port            : $(conf_get tcp-port) / $(conf_get udp-port)"
+echo "ipv4-network / netmask         : ${CONF_NET:-<unset>} / ${CONF_MASK:-<unset>}"
+echo "device                         : $(conf_get device)"
+echo "tunnel-all-dns                 : $(conf_get tunnel-all-dns)"
+echo "camouflage                     : $(conf_get camouflage)"
+echo "max-clients / max-same-clients : $(conf_get max-clients) / $(conf_get max-same-clients)"
+# The classic pitfall: VPN_SUBNET must equal ipv4-network/netmask
+if [ -n "$CONF_NET" ] && [ -n "$CONF_MASK" ]; then
+    CONF_CIDR="$CONF_NET/$(mask2len "$CONF_MASK")"
+    if [ "$CONF_CIDR" = "$vpn_subnet" ]; then
+        echo "[ok] VPN_SUBNET matches ipv4-network/netmask ($CONF_CIDR)"
+    else
+        echo "[warn] VPN_SUBNET ($vpn_subnet) != ocserv.conf $CONF_CIDR - client traffic will NOT be masqueraded"
+    fi
+fi
+echo
+
+# ---- Gateway mode -----------------------------------------------------------
+
+section "Gateway mode"
+if [ "$GW_ACTIVE" != 1 ]; then
+    echo "inactive - no gateway configured; clients exit via the default route"
+    echo
+else
+    if [ -f "$vpngw_state_dir/subnet" ]; then
+        read -r SUB4 SUB6 < "$vpngw_state_dir/subnet" || true
+        echo "subnet default (unmapped users) : v4=${SUB4:--} v6=${SUB6:--} (table $vpn_gateway_table)"
+    fi
+    if [ -f "$vpngw_state_dir/gateways" ]; then
+        printf '%-12s %-6s %-18s %s\n' "gateway" "table" "ipv4" "ipv6"
+        while read -r _name _tbl _g4 _g6; do
+            [ -n "$_name" ] || continue
+            printf '%-12s %-6s %-18s %s\n' "$_name" "$_tbl" "$_g4" "$_g6"
+        done < "$vpngw_state_dir/gateways"
+    else
+        echo "(no named gateways)"
+    fi
+    echo
+
+    section "Gateway egress probes (next-hop ping + public IP via each table)"
+    if diag_probe_arm; then
+        # Direct baseline first (main table, the container's own egress)
+        _r="$(probe_via_table main 4)" || _r="UNREACHABLE"
+        printf '%-22s : %s\n' "direct (main table)" "$_r"
+        # Subnet default
+        if [ -n "${SUB4:-}" ] && [ "$SUB4" != "-" ] && [ "$SUB4" != "block" ]; then
+            printf '%-22s : next-hop %s\n' "default (table $vpn_gateway_table)" "$(ping_probe 4 "$SUB4")"
+            _r="$(probe_via_table "$vpn_gateway_table" 4)" || _r="UNREACHABLE"
+            printf '%-22s : %s\n' "default egress v4" "$_r"
+        fi
+        if [ -n "${SUB6:-}" ] && [ "$SUB6" != "-" ] && [ "$SUB6" != "block" ] && [ "$SUB6" != "direct" ]; then
+            _r="$(probe_via_table "$vpn_gateway_table" 6)" || _r="UNREACHABLE"
+            printf '%-22s : %s\n' "default egress v6" "$_r"
+        fi
+        # Named gateways
+        if [ -f "$vpngw_state_dir/gateways" ]; then
+            while read -r _name _tbl _g4 _g6; do
+                [ -n "$_name" ] || continue
+                if [ "$_g4" != "block" ]; then
+                    printf '%-22s : next-hop %s\n' "$_name (table $_tbl) v4" "$(ping_probe 4 "$_g4")"
+                    _r="$(probe_via_table "$_tbl" 4)" || _r="UNREACHABLE"
+                    printf '%-22s : %s\n' "$_name egress v4" "$_r"
+                else
+                    printf '%-22s : %s\n' "$_name v4" "blocked (by config)"
+                fi
+                if [ "$_g6" != "block" ]; then
+                    printf '%-22s : next-hop %s\n' "$_name v6" "$(ping_probe 6 "$_g6")"
+                    _r="$(probe_via_table "$_tbl" 6)" || _r="UNREACHABLE"
+                    printf '%-22s : %s\n' "$_name egress v6" "$_r"
+                else
+                    printf '%-22s : %s\n' "$_name v6" "blocked (by config)"
+                fi
+            done < "$vpngw_state_dir/gateways"
+        fi
+        diag_probe_cleanup
+    fi
+    echo
+
+    section "Per-user maps (user -> gateway, bypass pools -> targets)"
+    if [ -f "$vpngw_state_dir/users" ]; then
+        printf '%-20s %-10s %s\n' "user" "gateway" "bypass"
+        while read -r _u _g; do
+            [ -n "$_u" ] || continue
+            _bp="$(bypass_session_pools "$_u" "$_g")"
+            printf '%-20s %-10s %s\n' "$_u" "$_g" "$(pools_with_targets "$_bp")"
+        done < "$vpngw_state_dir/users"
+        # Explicit bypass entries for users with no gateway mapping
+        if [ -f "$vpngw_state_dir/bypass_users" ]; then
+            while read -r _u _pl; do
+                [ -n "$_u" ] || continue
+                awk -v u="$_u" '$1 == u { found = 1 } END { exit found }' \
+                    "$vpngw_state_dir/users" || continue
+                [ "$_pl" = "none" ] && { printf '%-20s %-10s %s\n' "$_u" "-" "none (opted out)"; continue; }
+                printf '%-20s %-10s %s\n' "$_u" "-" "$(pools_with_targets "$_pl")"
+            done < "$vpngw_state_dir/bypass_users"
+        fi
+    else
+        echo "(per-user mode off - no user map)"
+    fi
+    _defbp=""
+    [ -f "$vpngw_state_dir/bypass_default" ] && _defbp="$(cat "$vpngw_state_dir/bypass_default")"
+    printf '%-20s %-10s %s\n' "<unmapped users>" "${vpn_gateway:-direct}" "${_defbp:+$(pools_with_targets "$_defbp")}"
+    echo
+fi
+
+# ---- Connected sessions -----------------------------------------------------
+
+section "Connected sessions"
+occtl show users 2>/dev/null || echo "[info] occtl unavailable"
+if [ -d "$vpngw_state_dir/sessions" ]; then
+    echo
+    echo "session records (user gateway ipv4 ipv6 bypass):"
+    _found=0
+    for _rec in "$vpngw_state_dir"/sessions/*; do
+        [ -f "$_rec" ] || continue
+        _found=1
+        cat "$_rec"
+    done
+    [ "$_found" = 1 ] || echo "(none)"
+fi
+echo
+
+# ---- Destination bypass -----------------------------------------------------
+
+if [ -f "$vpngw_state_dir/bypass_pools" ]; then
+    section "Destination bypass ($(cat "$vpngw_state_dir/bypass_mode" 2>/dev/null) mode)"
+    printf '%-14s %-10s %-6s %-22s %-14s %s\n' "pool" "target" "mark" "loaded (v4+v6)" "subscribers" "list file"
+    while read -r _p _t _m; do
+        [ -n "$_p" ] || continue
+        _n4="$(nft_set_count "pool_${_p}_v4")"
+        _n6="$(nft_set_count "pool_${_p}_v6")"
+        _sub="-"
+        if [ "$(cat "$vpngw_state_dir/bypass_mode" 2>/dev/null)" = "user" ]; then
+            _sub="$(nft_set_count "users_${_p}_v4") v4 + $(nft_set_count "users_${_p}_v6") v6"
+        else
+            _sub="whole subnet"
+        fi
+        _lf="$vpn_bypass_pools_dir/$_p.list"
+        if [ -f "$_lf" ]; then
+            _lfs="$(wc -l < "$_lf") lines"
+        else
+            _lfs="MISSING (empty pool)"
+        fi
+        printf '%-14s %-10s %-6s %-22s %-14s %s\n' "$_p" "$_t" "$_m" \
+            "$_n4 + $_n6 intervals" "$_sub" "$_lfs"
+    done < "$vpngw_state_dir/bypass_targets"
+    echo
+fi
+
+# ---- Routing state ----------------------------------------------------------
+
+section "Policy rules (ip rule / ip -6 rule)"
+ip rule show 2>/dev/null || true
+ip -6 rule show 2>/dev/null || echo "[info] no IPv6 policy rules"
+echo
+
+section "Routing tables"
+echo "main:"
+ip route show 2>/dev/null | sed 's/^/  /'
+if [ "$GW_ACTIVE" = 1 ]; then
+    echo "table $vpn_gateway_table (default gateway):"
+    ip route show table "$vpn_gateway_table" 2>/dev/null | sed 's/^/  /' || true
+    if [ -f "$vpngw_state_dir/gateways" ]; then
+        while read -r _name _tbl _ _; do
+            [ -n "$_name" ] || continue
+            echo "table $_tbl ($_name):"
+            ip route show table "$_tbl" 2>/dev/null | sed 's/^/  /' || true
+            ip -6 route show table "$_tbl" 2>/dev/null | sed 's/^/  /' || true
+        done < "$vpngw_state_dir/gateways"
+    fi
+fi
+echo
+
+# ---- nftables ---------------------------------------------------------------
+
+section "nftables (ocserv tables; bypass sets suppressed with -t)"
+for _tbl_name in ocserv ocserv_mss ocserv_gw; do
+    if nft list table inet "$_tbl_name" >/dev/null 2>&1; then
+        nft list table inet "$_tbl_name" 2>/dev/null
+    else
+        echo "table inet $_tbl_name: not present"
+    fi
+    echo
+done
+if nft list table inet ocserv_bypass >/dev/null 2>&1; then
+    # -t (terse) suppresses set contents - country pools run to tens of
+    # thousands of entries and would swamp the output.
+    nft -t list table inet ocserv_bypass 2>/dev/null
+    echo
+fi
+
+# ---- Direct connectivity ----------------------------------------------------
+
+section "Connectivity (direct / main table)"
+echo "ip_forward sysctl              : $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)"
+if ping -c 2 -W 3 "$TEST4" >/dev/null 2>&1; then
+    echo "[ok] ping $TEST4"
+else
+    echo "[warn] ping $TEST4 failed"
+fi
+DNS_RES="$(getent hosts one.one.one.one 2>/dev/null | awk '{ print $1; exit }')"
+if [ -n "$DNS_RES" ]; then
+    echo "[ok] DNS resolves (one.one.one.one -> $DNS_RES)"
+else
+    echo "[warn] DNS resolution failed"
+fi
+_body="$(fetch_url "$TRACE4")" || _body=""
+if [ -n "$_body" ]; then
+    echo "[ok] public IP (direct)        : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+else
+    echo "[warn] could not fetch public IP"
+fi
+echo
+
+# ---- Quick verdicts ---------------------------------------------------------
+
+section "Quick verdicts"
+if [ -n "$OCSERV_PID" ]; then
+    echo "[ok] ocserv is running"
+else
+    echo "[warn] ocserv is NOT running - check docker logs"
+fi
+if nft list table inet ocserv >/dev/null 2>&1; then
+    echo "[ok] NAT table (inet ocserv) present"
+else
+    echo "[warn] NAT table missing - client traffic cannot be masqueraded"
+fi
+if [ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)" = "1" ]; then
+    echo "[ok] IPv4 forwarding enabled"
+else
+    echo "[warn] IPv4 forwarding is OFF - set --sysctl net.ipv4.ip_forward=1"
+fi
+if [ "$GW_ACTIVE" = 1 ]; then
+    if nft list table inet ocserv_gw >/dev/null 2>&1; then
+        echo "[ok] gateway kill switch (inet ocserv_gw) present"
+    else
+        echo "[warn] gateway mode active but kill switch table is missing"
+    fi
+fi
+if [ -f "$vpngw_state_dir/bypass_pools" ]; then
+    if nft list table inet ocserv_bypass >/dev/null 2>&1; then
+        echo "[ok] destination-bypass table (inet ocserv_bypass) present"
+    else
+        echo "[warn] bypass configured but its nft table is missing"
+    fi
+fi
+echo "Done."
+hr
+exit 0

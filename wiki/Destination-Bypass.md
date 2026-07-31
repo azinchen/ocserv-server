@@ -175,6 +175,7 @@ docker exec <container> bypass-fetch ru     # one pool
 ## Verify
 
 ```bash
+docker exec <container> network-diagnostic                   # incl. per-pool load state + per-user maps
 docker exec <container> nft list table inet ocserv_bypass    # pools + subscribed sessions
 docker exec <container> ip rule                              # the fwmark rules at prio 800
 docker exec <container> cat /run/ocserv-vpngw/bypass_targets # pool -> target -> mark

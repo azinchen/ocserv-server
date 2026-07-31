@@ -170,7 +170,13 @@ Base: Alpine Linux · Init: s6-overlay · VPN: ocserv (built from source) · Fir
 
 If you have any problems with or questions about this image, please contact me through a [GitHub issue][github-issues-link] or [email][email-link].
 
-Check the **[Troubleshooting][wiki-troubleshoot]** and **[FAQ][wiki-faq]** wiki pages first.
+Check the **[Troubleshooting][wiki-troubleshoot]** and **[FAQ][wiki-faq]** wiki pages first — and attach the output of the built-in diagnostic to any report:
+
+```bash
+docker exec ocserv-server network-diagnostic
+```
+
+It prints server status, config sanity checks, gateway/bypass state with live egress probes (public IP through each gateway), connected sessions, routing and firewall state, and `[ok]`/`[warn]` verdicts.
 
 ## License
 
