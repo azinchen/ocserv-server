@@ -79,6 +79,7 @@ TRACE6="https://[2606:4700:4700::1111]/cdn-cgi/trace"
 DIAG_MARK="0xd1a6"
 DIAG_RULE_PRIO=790
 DIAG_TMP="/tmp/ocserv-diag.$$"
+DIAG_GEO="/tmp/ocserv-diag-geo.$$"
 
 WARNS=0
 HAVE_V6=0
@@ -111,18 +112,66 @@ fetch_url() { # $1 = url; prints the body (busybox wget, no cert verification)
     wget -q -T 8 -O - "$1" 2>/dev/null
 }
 
-# HTTP status of a URL: "200" when the fetch succeeded, else the code parsed
-# from busybox wget's "server returned error: HTTP/1.1 404 ..." message.
-http_status() {
-    if _hs="$(wget -T 5 -O /dev/null "$1" 2>&1)"; then
+# Probe a URL: prints "200" when the fetch succeeded, the status code parsed
+# from busybox wget's "server returned error: HTTP/1.1 404 ..." message, or
+# "ERR <last error line>" when the exchange failed below HTTP (TLS/transport) -
+# the caller must treat ERR as inconclusive, not as a pass or fail.
+http_probe() {
+    if _hp="$(wget -T 5 -O /dev/null "$1" 2>&1)"; then
         echo 200
+        return
+    fi
+    _hp_c="$(printf '%s\n' "$_hp" | sed -n 's|.*HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p' | head -1)"
+    if [ -n "$_hp_c" ]; then
+        echo "$_hp_c"
     else
-        printf '%s\n' "$_hs" | sed -n 's|.*HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p' | head -1
+        echo "ERR $(printf '%s\n' "$_hp" | grep -vi '^Connecting' | tail -1)"
     fi
 }
 
 trace_field() { # $1 = trace body, $2 = field; cdn-cgi/trace is "key=value" lines
     printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
+}
+
+# Geolocate an exit IP: "City, CC - org". The lookup runs over the DIRECT path
+# (its destination is never in the probe marking rules), so it works the same
+# no matter which gateway the probed traffic took. Cached per IP in a temp
+# file, since gateways often share an exit. Empty result on total failure -
+# callers fall back to the trace's country code.
+geo_of() { # $1 = ip
+    _g_hit="$(awk -v ip="$1" '$1 == ip { $1 = ""; sub(/^ /, ""); print; exit }' "$DIAG_GEO" 2>/dev/null)"
+    if [ -n "$_g_hit" ]; then
+        [ "$_g_hit" = "-" ] || printf '%s\n' "$_g_hit"
+        return 0
+    fi
+    _g_city=""; _g_cc=""; _g_org=""
+    _g_resp="$(wget -q -T 4 -O - "https://ipinfo.io/$1/json" 2>/dev/null)" || _g_resp=""
+    if [ -n "$_g_resp" ]; then
+        _g_city="$(printf '%s\n' "$_g_resp" | sed -n 's/.*"city"[: ]*"\([^"]*\)".*/\1/p' | head -1)"
+        _g_cc="$(printf '%s\n' "$_g_resp" | sed -n 's/.*"country"[: ]*"\([^"]*\)".*/\1/p' | head -1)"
+        _g_org="$(printf '%s\n' "$_g_resp" | sed -n 's/.*"org"[: ]*"\([^"]*\)".*/\1/p' | head -1)"
+    fi
+    if [ -z "$_g_city$_g_cc" ]; then
+        # Fallback: plain-text API, fields come back in the requested order
+        _g_resp="$(wget -q -T 4 -O - "http://ip-api.com/line/$1?fields=city,countryCode,isp" 2>/dev/null)" || _g_resp=""
+        _g_city="$(printf '%s\n' "$_g_resp" | sed -n 1p)"
+        _g_cc="$(printf '%s\n' "$_g_resp" | sed -n 2p)"
+        _g_org="$(printf '%s\n' "$_g_resp" | sed -n 3p)"
+    fi
+    _g_out=""
+    [ -n "$_g_city" ] && _g_out="$_g_city"
+    [ -n "$_g_cc" ] && _g_out="${_g_out:+$_g_out, }$_g_cc"
+    [ -n "$_g_org" ] && _g_out="${_g_out:+$_g_out - }$_g_org"
+    echo "$1 ${_g_out:--}" >> "$DIAG_GEO"
+    [ -n "$_g_out" ] && printf '%s\n' "$_g_out"
+    return 0
+}
+
+trace_pretty() { # $1 = trace body -> "IP (City, CC - org)" (geo falls back to loc=CC)
+    _tp_ip="$(trace_field "$1" ip)"
+    [ -n "$_tp_ip" ] || return 1
+    _tp_g="$(geo_of "$_tp_ip")"
+    printf '%s (%s)\n' "$_tp_ip" "${_tp_g:-$(trace_field "$1" loc)}"
 }
 
 # Count entries of an nft set without dumping it (country pools are huge).
@@ -185,7 +234,7 @@ dev_counters_raw() { # $1 = device -> "rx tx" in bytes (empty if unknown)
 PROBES_ARMED=0
 
 diag_probe_cleanup() {
-    rm -f "$DIAG_TMP"
+    rm -f "$DIAG_TMP" "$DIAG_GEO"
     [ "$PROBES_ARMED" = 1 ] || return 0
     _n=0
     while [ "$_n" -lt 8 ] && ip rule del priority "$DIAG_RULE_PRIO" 2>/dev/null; do
@@ -238,16 +287,14 @@ probe_set_mark() { # $1 = family 4|6, $2 = mark: mark+masquerade probe traffic o
     fi
 }
 
-probe_fetch() { # $1 = family 4|6; prints "IP (LOC)"
+probe_fetch() { # $1 = family 4|6; prints "IP (City, CC - org)"
     if [ "$1" = 4 ]; then
         _pf_body="$(fetch_url "$TRACE4")"
     else
         _pf_body="$(fetch_url "$TRACE6")"
     fi
     [ -n "$_pf_body" ] || return 1
-    _pf_ip="$(trace_field "$_pf_body" ip)"
-    [ -n "$_pf_ip" ] || return 1
-    printf '%s (%s)\n' "$_pf_ip" "$(trace_field "$_pf_body" loc)"
+    trace_pretty "$_pf_body"
 }
 
 probe_via_table() { # $1 = table (or "main"), $2 = family 4|6
@@ -476,12 +523,12 @@ fi
 if [ "$MODE" = "basic" ]; then
     _body="$(fetch_url "$TRACE4")" || _body=""
     _direct=""
-    [ -n "$_body" ] && _direct="$(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+    [ -n "$_body" ] && _direct="$(trace_pretty "$_body")"
     [ -n "$_direct" ] || WARNS=$((WARNS + 1))
     echo "ocserv: $SERVER_STATE, $CONNECTED client(s); direct egress: ${_direct:-UNREACHABLE}"
     _body6="$(fetch_url "$TRACE6")" || _body6=""
     [ -n "$_body6" ] \
-        && echo "direct egress v6: $(trace_field "$_body6" ip) ($(trace_field "$_body6" loc))"
+        && echo "direct egress v6: $(trace_pretty "$_body6")"
     if [ "$GW_ACTIVE" = 1 ] && [ -f "$vpngw_state_dir/gateways" ] && diag_probe_arm >/dev/null; then
         while read -r _name _tbl _g4 _g6; do
             [ -n "$_name" ] || continue
@@ -541,9 +588,9 @@ if [ "$MODE" = "json" ]; then
 
     _d4="null"; _d6="null"
     _body="$(fetch_url "$TRACE4")" || _body=""
-    [ -n "$_body" ] && _d4="\"$(json_escape "$(trace_field "$_body" ip) ($(trace_field "$_body" loc))")\""
+    [ -n "$_body" ] && _d4="\"$(json_escape "$(trace_pretty "$_body")")\""
     _body="$(fetch_url "$TRACE6")" || _body=""
-    [ -n "$_body" ] && _d6="\"$(json_escape "$(trace_field "$_body" ip) ($(trace_field "$_body" loc))")\""
+    [ -n "$_body" ] && _d6="\"$(json_escape "$(trace_pretty "$_body")")\""
 
     _j_cl=""
     if [ -d "$vpngw_state_dir/sessions" ]; then
@@ -657,7 +704,8 @@ echo "ipv4-network / netmask         : ${CONF_NET:-<unset>} / ${CONF_MASK:-<unse
 echo "ipv6-network                   : $(conf_get ipv6-network)"
 echo "device                         : $(conf_get device)"
 echo "tunnel-all-dns                 : $(conf_get tunnel-all-dns)"
-echo "camouflage                     : $(conf_get camouflage)"
+_camo="$(conf_get camouflage)"
+echo "camouflage                     : ${_camo:-false}"
 echo "max-clients / max-same-clients : $(conf_get max-clients) / $(conf_get max-same-clients)"
 # The classic pitfall: VPN_SUBNET must equal ipv4-network/netmask
 if [ -n "$CONF_NET" ] && [ -n "$CONF_MASK" ]; then
@@ -715,26 +763,45 @@ echo
 
 # ---- Camouflage self-test ---------------------------------------------------
 
-if [ "$(conf_get camouflage)" = "true" ] && [ -n "$OCSERV_PID" ]; then
-    section "Camouflage self-test (local probe)"
+if [ -n "$OCSERV_PID" ]; then
     _cs_port="$(conf_get tcp-port)"
     _cs_port="${_cs_port:-443}"
-    _cs_secret="$(conf_get camouflage_secret)"
-    _st="$(http_status "https://127.0.0.1:$_cs_port/")"
-    if [ "$_st" = "200" ]; then
-        warn "probe WITHOUT the secret got HTTP 200 - camouflage does not seem to gate the handshake"
-    else
-        ok "probe without the secret got HTTP ${_st:-error} (server presents as a plain website)"
-    fi
-    if [ -n "$_cs_secret" ]; then
-        _st="$(http_status "https://127.0.0.1:$_cs_port/?$_cs_secret")"
-        if [ "$_st" = "200" ]; then
-            ok "probe with the configured secret got HTTP 200 (VPN endpoint reachable)"
-        else
-            warn "probe WITH the secret got HTTP ${_st:-error} - clients using the secret may be failing too"
+    if [ "$(conf_get camouflage)" = "true" ]; then
+        section "Camouflage self-test (local probe)"
+        _cs_secret="$(conf_get camouflage_secret)"
+        _st="$(http_probe "https://127.0.0.1:$_cs_port/")"
+        case "$_st" in
+            200)
+                warn "probe WITHOUT the secret got HTTP 200 - camouflage does not seem to gate the handshake"
+                ;;
+            ERR*)
+                # busybox wget's minimal TLS client may not complete a handshake
+                # with the server's TLS priorities - that says nothing about
+                # camouflage, so report it as inconclusive, not as a failure.
+                info "local probe could not complete a TLS/HTTP exchange (${_st#ERR }) - self-test inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/"
+                _cs_secret=""
+                ;;
+            *)
+                ok "probe without the secret got HTTP $_st (server presents as a plain website)"
+                ;;
+        esac
+        if [ -n "$_cs_secret" ]; then
+            _st="$(http_probe "https://127.0.0.1:$_cs_port/?$_cs_secret")"
+            case "$_st" in
+                200)  ok "probe with the configured secret got HTTP 200 (VPN endpoint reachable)" ;;
+                ERR*) info "probe with the secret could not complete a TLS/HTTP exchange (${_st#ERR }) - inconclusive" ;;
+                *)    warn "probe WITH the secret got HTTP $_st - clients using the secret may be failing too" ;;
+            esac
         fi
     else
-        info "camouflage enabled but no camouflage_secret set?"
+        # No camouflage: the endpoint should answer a plain HTTPS GET directly
+        section "Server self-test (local probe)"
+        _st="$(http_probe "https://127.0.0.1:$_cs_port/")"
+        case "$_st" in
+            200)  ok "VPN endpoint answers on port $_cs_port (HTTP 200, camouflage off)" ;;
+            ERR*) info "local probe could not complete a TLS/HTTP exchange (${_st#ERR }) - inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/" ;;
+            *)    info "endpoint answered HTTP $_st on port $_cs_port (a real client handshake may still succeed)" ;;
+        esac
     fi
     echo
 fi
@@ -1075,21 +1142,26 @@ if ping -6 -c 2 -W 3 "$TEST6" >/dev/null 2>&1 || ping6 -c 2 -W 3 "$TEST6" >/dev/
 else
     info "ping $TEST6 failed (no IPv6 egress?)"
 fi
+# Docker's embedded DNS (127.0.0.11) occasionally drops a single query -
+# retry once and fall back to nslookup before calling it broken.
 DNS_RES="$(getent hosts one.one.one.one 2>/dev/null | awk '{ print $1; exit }')"
+[ -n "$DNS_RES" ] || { sleep 1; DNS_RES="$(getent hosts one.one.one.one 2>/dev/null | awk '{ print $1; exit }')"; }
+[ -n "$DNS_RES" ] || DNS_RES="$(nslookup one.one.one.one 2>/dev/null \
+    | awk '/^Name/ { f = 1 } f && /^Address/ { print $2; exit }')"
 if [ -n "$DNS_RES" ]; then
     ok "DNS resolves (one.one.one.one -> $DNS_RES)"
 else
-    warn "DNS resolution failed"
+    warn "DNS resolution failed (getent + nslookup) - Docker DNS at 127.0.0.11 unreachable?"
 fi
 _body="$(fetch_url "$TRACE4")" || _body=""
 if [ -n "$_body" ]; then
-    ok "public IPv4 (direct)      : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+    ok "public IPv4 (direct)      : $(trace_pretty "$_body")"
 else
     warn "could not fetch public IPv4"
 fi
 _body="$(fetch_url "$TRACE6")" || _body=""
 if [ -n "$_body" ]; then
-    ok "public IPv6 (direct)      : $(trace_field "$_body" ip) ($(trace_field "$_body" loc))"
+    ok "public IPv6 (direct)      : $(trace_pretty "$_body")"
 else
     info "no public IPv6 (fine unless clients are meant to use IPv6)"
 fi
