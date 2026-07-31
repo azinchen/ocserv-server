@@ -36,7 +36,7 @@ With the `openconnect` client:
 sudo openconnect "https://vpn.example.com:8443/?a-long-random-hard-to-guess-secret" --user=alice
 ```
 
-For AnyConnect and router clients (e.g. Keenetic / Netcraze), put the full URL **including `/?secret`** in the server address field. See [[Clients and Devices]].
+For AnyConnect and router clients (e.g. Keenetic / Netcraze), put the full URL **including `/?secret`** in the server address field. On **OpenWrt / GL.iNet** the server field takes no URL — put the secret in the `usergroup` option instead (`option usergroup '?your-secret'`). See [[Clients and Devices]].
 
 ## Verifying camouflage works
 

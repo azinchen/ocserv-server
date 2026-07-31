@@ -4,7 +4,7 @@
 
 `ocserv-server` packages [ocserv](https://ocserv.gitlab.io/www/) — the OpenConnect VPN server — into a small, self-configuring Alpine-based container image. It builds ocserv from source, wires up NAT/forwarding automatically with **nftables**, and supervises the daemon with **s6-overlay** so the container behaves like a proper init system.
 
-It speaks the OpenConnect/Cisco AnyConnect SSL-VPN protocol, so it works with the `openconnect` client, the Cisco AnyConnect client, mobile clients, and routers such as Keenetic / Netcraze.
+It speaks the OpenConnect/Cisco AnyConnect SSL-VPN protocol, so it works with the `openconnect` client, the Cisco AnyConnect client, mobile clients, and routers such as Keenetic / Netcraze, OpenWrt and GL.iNet.
 
 ---
 

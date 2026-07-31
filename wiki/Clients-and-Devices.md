@@ -2,7 +2,7 @@
 
 ocserv speaks the OpenConnect / Cisco AnyConnect SSL-VPN protocol, so a wide range of clients work. The connection target is your server URL — **including the camouflage secret** if [camouflage](Camouflage-Mode) is enabled.
 
-> If camouflage is on, every example below must use `https://host:port/?your-secret` as the server URL.
+> If camouflage is on, every example below must use `https://host:port/?your-secret` as the server URL (except OpenWrt, where the secret goes in the `usergroup` option — see that section).
 
 ## OpenConnect (Linux / macOS / BSD)
 
@@ -51,6 +51,64 @@ A connected tunnel does **not** automatically send the router's LAN traffic thro
 - **Full tunnel for everyone:** raise the VPN above the ISP in the internet-connection priority list.
 
 This is a router-side decision — the server already advertises `route = default`. See [Networking NAT and Routing#full-vs-split-tunnel](Networking-NAT-and-Routing#full-vs-split-tunnel).
+
+## OpenWrt routers
+
+OpenWrt has a **native OpenConnect client integration**: the `openconnect` package plus a netifd/LuCI protocol handler. Once configured, the router (and the LAN behind it) exits via your ocserv server.
+
+**1. Install the packages:**
+
+```bash
+opkg update
+opkg install openconnect luci-proto-openconnect
+```
+
+(Log out and back into LuCI afterwards so the new protocol appears in the interface list.)
+
+**2. Create the interface** — in LuCI: *Network → Interfaces → Add new interface…*, protocol **OpenConnect (CISCO AnyConnect SSL VPN)** — or directly in `/etc/config/network`:
+
+```
+config interface 'oc'
+	option proto 'openconnect'
+	option server 'vpn.example.com'
+	option port '8443'
+	option username 'alice'
+	option password 'S3cret'
+	# Camouflage: the secret cannot go in the server field on OpenWrt -
+	# it is the URL path ("usergroup"), question mark included:
+	option usergroup '?your-secret'
+	# Self-signed cert: pin its SHA256 fingerprint instead of disabling verification
+	#option serverhash 'AABBCC...'
+	# TCP-only server (no udp-port): skip DTLS attempts
+	#option no_dtls '1'
+```
+
+The protocol defaults to AnyConnect — exactly what ocserv speaks, so there is nothing else to set.
+
+**3. Put the interface in the `wan` firewall zone** so LAN traffic is forwarded and masqueraded into the tunnel — in LuCI: *Network → Firewall → wan → Covered networks → add `oc`*, or:
+
+```bash
+uci add_list firewall.@zone[1].network='oc'   # @zone[1] is usually the wan zone
+uci commit firewall
+/etc/init.d/firewall restart
+```
+
+Routing notes:
+
+- The server pushes `route = default` and DNS, and OpenWrt applies them — so unlike Keenetic, a connected OpenWrt tunnel **does** carry the whole router's traffic by default (the tunnel's default route wins over the ISP's).
+- For per-device / per-destination splits, use OpenWrt's `pbr` (policy-based routing) package and treat the `oc` interface as one of the exits.
+
+### GL.iNet routers
+
+GL.iNet devices run OpenWrt underneath their own UI, but the stock GL interface only offers WireGuard and OpenVPN clients — OpenConnect is set up the plain-OpenWrt way:
+
+1. Open **LuCI** (*System → Advanced Settings*) or SSH in (`ssh root@192.168.8.1`, your web-admin password).
+2. Install the packages and configure the interface + firewall zone exactly as above.
+
+GL.iNet-specific caveats:
+
+- The GL dashboard's VPN status, kill switch and "VPN policies" only apply to tunnels created in the GL UI — they **don't see** this connection. Manage it from LuCI, and don't rely on the GL kill switch for it.
+- A **firmware upgrade removes manually-installed packages** (your `/etc/config/network` settings survive with "keep settings"); rerun the `opkg install` afterwards.
 
 ## Confirming a client really works
 
