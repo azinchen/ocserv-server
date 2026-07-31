@@ -1,7 +1,7 @@
 # FAQ
 
 **What protocol does this use? Which clients work?**
-The OpenConnect / Cisco AnyConnect SSL-VPN protocol. Works with the `openconnect` client, Cisco AnyConnect / Secure Client, mobile OpenConnect apps, and routers like Keenetic / Netcraze. See [[Clients and Devices]].
+The OpenConnect / Cisco AnyConnect SSL-VPN protocol. Works with the `openconnect` client, Cisco AnyConnect / Secure Client, mobile OpenConnect apps, and routers like Keenetic / Netcraze, OpenWrt and GL.iNet. See [[Clients and Devices]].
 
 **Which image tag should I use?**
 `ghcr.io/azinchen/ocserv-server:dev` for the latest development build (the `main` branch), or `azinchen/ocserv-server:latest` / a pinned `:x.y.z` for releases. See [[Building and CI]].
@@ -17,6 +17,12 @@ No. Those LinuxServer-style variables are ignored. ocserv drops privileges via `
 
 **Why does `occtl show status` show 0 bytes RX/TX for a connected user?**
 Those counters update on disconnect. For live traffic, read the tunnel interface counters. See [Troubleshooting#how-do-i-prove-the-tunnel-actually-works](Troubleshooting#how-do-i-prove-the-tunnel-actually-works).
+
+**Can clients exit through NordVPN (or another VPN) instead of my server's IP?**
+Yes — that's [[Gateway Mode]]: point `VPN_GATEWAY` at an upstream VPN container (e.g. `azinchen/nordvpn` with `FORWARD_FROM`) and clients exit with its IP, protected by a fail-closed kill switch. Different users can use different upstreams (`VPN_GATEWAYS` + `VPN_USER_GATEWAY`).
+
+**Can some destinations skip the upstream — or use a different one, or be blocked?**
+Yes — [[Destination Bypass]]: named CIDR pools (e.g. a country list) whose matched traffic goes direct, out a chosen gateway, or is rejected, per pool. Lists can be auto-fetched and hot-reloaded.
 
 **Can SWAG reverse-proxy the VPN?**
 No — the VPN protocol isn't a proxyable HTTP stream. SWAG only provides the TLS certificate; ocserv is exposed directly on its own port. See [[Reverse Proxy and Certificates]].

@@ -97,7 +97,7 @@ route = default
 - **Full tunnel** is what you want for privacy / censorship circumvention. Pair it with `tunnel-all-dns = true` so DNS can't leak outside the tunnel.
 - **Split tunnel** is for reaching specific internal networks while leaving general browsing on the local link.
 
-> **Routers (e.g. Keenetic / Netcraze) and full tunnel:** even when the server pushes `route = default`, a router won't necessarily send its own/its LAN's traffic through the tunnel — that's a router-side **policy-based routing** decision you configure on the router. See [Clients and Devices](Clients-and-Devices#keenetic-and-netcraze-routers).
+> **Routers and full tunnel:** even when the server pushes `route = default`, a router won't necessarily send its own/its LAN's traffic through the tunnel. On **Keenetic / Netcraze** that's a router-side **policy-based routing** decision you configure explicitly; **OpenWrt** does apply the pushed default route, but its LAN only follows once the tunnel interface is in the `wan` firewall zone. See [Clients and Devices](Clients-and-Devices#keenetic-and-netcraze-routers).
 
 ## IPv6
 

@@ -92,6 +92,15 @@ If you used a self-signed cert, pin it instead of disabling verification — see
 
 Connecting only proves authentication. To confirm the data plane works, see the verification steps in [Troubleshooting](Troubleshooting#how-do-i-prove-the-tunnel-actually-works).
 
+## Going further
+
+Once the basic server works, the headline features are each a page away:
+
+- **[[Camouflage Mode]]** — make the server look like an ordinary HTTPS website to probes and DPI.
+- **[[Gateway Mode]]** — send clients out through an upstream VPN container (e.g. NordVPN), per user if you like.
+- **[[Destination Bypass]]** — route by destination: country pools direct, chosen services via a specific exit, ad pools blocked.
+- **[[Reverse Proxy and Certificates]]** — Let's Encrypt via SWAG, with certificate hot-reload.
+
 ---
 
 Next: **[[Configuration Reference]]** · **[[ocserv Configuration]]**
