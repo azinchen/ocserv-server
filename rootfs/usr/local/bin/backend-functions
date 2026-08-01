@@ -49,6 +49,9 @@ vpn_bypass_sources_file="${VPN_BYPASS_SOURCES_FILE:-}"
 vpn_bypass_update_interval="${VPN_BYPASS_UPDATE_INTERVAL:-0}"
 cert_watch="${CERT_WATCH:-0}"
 cert_watch_interval="${CERT_WATCH_INTERVAL:-0}"
+health_check_enabled="${HEALTH_CHECK_ENABLED:-false}"
+health_check_egress="${HEALTH_CHECK_EGRESS:-}"
+health_check_url="${HEALTH_CHECK_URL:-https://1.1.1.1/cdn-cgi/trace}"
 ocserv_config="${OCSERV_CONFIG:-/etc/ocserv/ocserv.conf}"
 
 # Normalise the subnet-default gateway values (unmapped users). Each family
@@ -835,6 +838,113 @@ vpngw_reconcile_gateways() {
         fi
     fi
     return 0
+}
+
+# ---- Egress probe machinery (shared: network-diagnostic, healthcheck) ------
+# Sends locally generated test traffic through a chosen routing table (or a
+# live bypass fwmark rule) to verify an egress path end to end, without
+# touching any live rule: a temporary route-type output chain fwmarks traffic
+# to the test destination only, a mark-scoped masquerade handles multi-
+# interface deployments, and an "fwmark -> <table>" policy rule steers it.
+# Forwarded (client) traffic is never marked - the chain hooks output only.
+#
+# Each consumer sets its OWN table/mark/prio triple before probe_arm so two
+# probers never collide (network-diagnostic: ocserv_diag/0xd1a6/790,
+# healthcheck: ocserv_health/0xd1a7/791) and must call probe_cleanup on exit
+# (trap). Docker serializes health probes; the diagnostic is run manually.
+PROBE_TABLE="${PROBE_TABLE:-ocserv_diag}"
+PROBE_MARK="${PROBE_MARK:-0xd1a6}"
+PROBE_PRIO="${PROBE_PRIO:-790}"
+PROBE_TEST4="1.1.1.1"
+PROBE_TEST6="2606:4700:4700::1111"
+PROBE_TRACE4="https://1.1.1.1/cdn-cgi/trace"
+PROBE_TRACE6="https://[2606:4700:4700::1111]/cdn-cgi/trace"
+PROBE_WGET_TIMEOUT="${PROBE_WGET_TIMEOUT:-8}"
+PROBE_ARMED=0
+
+fetch_url() { # $1 = url; prints the body (busybox wget, no cert verification)
+    wget -q -T "$PROBE_WGET_TIMEOUT" -O - "$1" 2>/dev/null
+}
+
+probe_cleanup() {
+    [ "$PROBE_ARMED" = 1 ] || return 0
+    _pc_n=0
+    while [ "$_pc_n" -lt 8 ] && ip rule del priority "$PROBE_PRIO" 2>/dev/null; do
+        _pc_n=$((_pc_n + 1))
+    done
+    _pc_n=0
+    while [ "$_pc_n" -lt 8 ] && ip -6 rule del priority "$PROBE_PRIO" 2>/dev/null; do
+        _pc_n=$((_pc_n + 1))
+    done
+    nft delete table inet "$PROBE_TABLE" 2>/dev/null || true
+    PROBE_ARMED=0
+}
+
+probe_arm() {
+    [ "$PROBE_ARMED" = 1 ] && return 0
+    if nft -f - <<EOF
+table inet $PROBE_TABLE {
+    chain output {
+        type route hook output priority mangle; policy accept;
+    }
+    chain postrouting {
+        type nat hook postrouting priority 110; policy accept;
+    }
+}
+EOF
+    then
+        PROBE_ARMED=1
+        return 0
+    fi
+    return 1
+}
+
+# Remove the per-probe marking rules; MUST be called after a probe block so a
+# leftover mark rule cannot steer later plain fetches through a gateway table.
+probe_rules_clear() {
+    nft flush chain inet "$PROBE_TABLE" output 2>/dev/null
+    nft flush chain inet "$PROBE_TABLE" postrouting 2>/dev/null
+}
+
+probe_set_mark() { # $1 = family 4|6, $2 = mark: mark+masquerade probe traffic only
+    probe_rules_clear
+    if [ "$1" = 4 ]; then
+        nft add rule inet "$PROBE_TABLE" output ip daddr "$PROBE_TEST4" tcp dport 443 meta mark set "$2" \
+            && nft add rule inet "$PROBE_TABLE" postrouting ip daddr "$PROBE_TEST4" meta mark "$2" masquerade
+    else
+        nft add rule inet "$PROBE_TABLE" output ip6 daddr "$PROBE_TEST6" tcp dport 443 meta mark set "$2" \
+            && nft add rule inet "$PROBE_TABLE" postrouting ip6 daddr "$PROBE_TEST6" meta mark "$2" masquerade
+    fi
+}
+
+probe_fetch_raw() { # $1 = family 4|6; prints the cdn-cgi/trace body
+    if [ "$1" = 4 ]; then
+        _pf_body="$(fetch_url "$PROBE_TRACE4")"
+    else
+        _pf_body="$(fetch_url "$PROBE_TRACE6")"
+    fi
+    [ -n "$_pf_body" ] || return 1
+    printf '%s\n' "$_pf_body"
+}
+
+probe_table_raw() { # $1 = table (or "main"), $2 = family 4|6; prints trace body
+    probe_set_mark "$2" "$PROBE_MARK" >/dev/null 2>&1 || return 1
+    if [ "$2" = 4 ]; then
+        ip rule add fwmark "$PROBE_MARK" lookup "$1" priority "$PROBE_PRIO" 2>/dev/null || return 1
+        _pt_r="$(probe_fetch_raw 4)"; _pt_rc=$?
+        ip rule del priority "$PROBE_PRIO" 2>/dev/null
+    else
+        ip -6 rule add fwmark "$PROBE_MARK" lookup "$1" priority "$PROBE_PRIO" 2>/dev/null || return 1
+        _pt_r="$(probe_fetch_raw 6)"; _pt_rc=$?
+        ip -6 rule del priority "$PROBE_PRIO" 2>/dev/null
+    fi
+    [ "$_pt_rc" = 0 ] || return 1
+    printf '%s\n' "$_pt_r"
+}
+
+probe_mark_raw() { # $1 = mark, $2 = family: rely on the LIVE bypass fwmark rules
+    probe_set_mark "$2" "$1" >/dev/null 2>&1 || return 1
+    probe_fetch_raw "$2"
 }
 
 # ---- certificate hot-reload -----------------------------------------------

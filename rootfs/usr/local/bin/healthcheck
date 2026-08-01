@@ -1,0 +1,154 @@
+#!/bin/sh
+# shellcheck shell=sh
+#
+# Side-effect-free liveness probe for the Docker HEALTHCHECK instruction:
+# never sleeps, never retries internally, never touches live vpngw state.
+# Docker's --interval/--timeout/--retries govern retry and failure behaviour,
+# and Docker stores this script's one-line output in .State.Health.Log, so
+# `docker inspect` shows WHY the container went unhealthy.
+#
+# The HEALTHCHECK instruction is baked into the image and always fires; the
+# probe reports healthy without checking anything unless HEALTH_CHECK_ENABLED
+# is "true" (same opt-in pattern as the openconnect-client sibling image).
+#
+# What gates health:
+#   always          ocserv process, TCP listener, occtl responding
+#   automatically   NAT table; kill-switch/bypass tables when those features
+#                   are configured (routing-integrity drift)
+#   opt-in          egress data-plane probes per path (HEALTH_CHECK_EGRESS):
+#                   "direct", named gateway(s), "default", or "all". Gateway
+#                   probes use the shared fwmark machinery with a DEDICATED
+#                   table/mark/prio (ocserv_health/0xd1a7/791), so a manual
+#                   network-diagnostic run can never collide with a probe.
+#
+# Gateway egress is opt-in ON PURPOSE: an upstream tunnel being down makes the
+# CONTAINER unhealthy only if you say so - restart automation reacting to it
+# would restart ocserv, which cannot fix an upstream and would drop every
+# session. Gate on the paths whose failure you would act on.
+
+set -u
+
+. /usr/local/bin/backend-functions
+
+[ "$health_check_enabled" = "true" ] || exit 0
+
+# This prober's identity - MUST differ from network-diagnostic's
+PROBE_TABLE="ocserv_health"
+PROBE_MARK="0xd1a7"
+PROBE_PRIO=791
+PROBE_WGET_TIMEOUT=4
+
+fail() { echo "unhealthy: $*"; exit 1; }
+
+# ---- Tier 1: server liveness ------------------------------------------------
+
+OCSERV_PID="$(pidof ocserv 2>/dev/null | awk '{ print $1 }')" || OCSERV_PID=""
+[ -n "$OCSERV_PID" ] || fail "ocserv process not running"
+
+_port="$(sed -n 's/^[[:space:]]*tcp-port[[:space:]]*=[[:space:]]*//p' "$ocserv_config" 2>/dev/null \
+    | head -1 | sed 's/[[:space:]]*#.*//; s/"//g')"
+_port="${_port:-443}"
+netstat -tln 2>/dev/null | grep -q ":$_port " || fail "no TCP listener on port $_port"
+
+occtl show status >/dev/null 2>&1 || fail "occtl not responding (sec-mod wedged?)"
+
+# ---- Tier 2: routing integrity ------------------------------------------------
+
+nft list table inet ocserv >/dev/null 2>&1 || fail "NAT table (inet ocserv) missing"
+if [ -d "$vpngw_state_dir" ]; then
+    nft list table inet ocserv_gw >/dev/null 2>&1 \
+        || fail "gateway mode active but kill-switch table (inet ocserv_gw) missing"
+    if [ -f "$vpngw_state_dir/bypass_pools" ]; then
+        nft list table inet ocserv_bypass >/dev/null 2>&1 \
+            || fail "destination bypass configured but its table (inet ocserv_bypass) missing"
+    fi
+fi
+
+# ---- Tier 3: egress data plane (opt-in per path) ------------------------------
+
+EGRESS_OK=""
+
+# One fetch per configured URL until one succeeds (direct path only - custom
+# URLs may resolve anywhere, so they cannot be pinned into gateway probes)
+direct_ok() {
+    _oldifs="$IFS"; IFS=';,'
+    for _u in $health_check_url; do
+        [ -n "$_u" ] || continue
+        if wget -q -T 4 -O /dev/null "$_u" 2>/dev/null; then
+            IFS="$_oldifs"
+            return 0
+        fi
+    done
+    IFS="$_oldifs"
+    return 1
+}
+
+# Probe every family a gateway routes through its table
+gateway_ok() { # $1 = name, $2 = table, $3 = gw4, $4 = gw6
+    if [ "$3" != "block" ]; then
+        probe_table_raw "$2" 4 >/dev/null || fail "egress via gateway '$1' (table $2) failed for IPv4"
+    fi
+    if [ "$4" != "block" ]; then
+        probe_table_raw "$2" 6 >/dev/null || fail "egress via gateway '$1' (table $2) failed for IPv6"
+    fi
+    return 0
+}
+
+if [ -n "$health_check_egress" ]; then
+    trap probe_cleanup EXIT INT TERM
+
+    # Expand the list; "all" = direct + the subnet default (when routed) +
+    # every named gateway
+    _paths="$(printf '%s' "$health_check_egress" | tr '+,' '  ')"
+    case " $_paths " in
+        *" all "*)
+            _paths="direct"
+            if [ -f "$vpngw_state_dir/subnet" ]; then
+                read -r _s4 _ < "$vpngw_state_dir/subnet" 2>/dev/null || _s4="-"
+                case "$_s4" in -|block) : ;; *) _paths="$_paths default" ;; esac
+            fi
+            [ -f "$vpngw_state_dir/gateways" ] \
+                && _paths="$_paths $(awk '{ printf "%s ", $1 }' "$vpngw_state_dir/gateways")"
+            ;;
+    esac
+
+    for _p in $_paths; do
+        case "$_p" in
+            direct)
+                direct_ok || fail "direct egress failed (${health_check_url%%[;,]*})"
+                ;;
+            default)
+                [ -f "$vpngw_state_dir/subnet" ] || fail "HEALTH_CHECK_EGRESS lists 'default' but no default gateway is configured"
+                read -r _s4 _s6 < "$vpngw_state_dir/subnet" 2>/dev/null || { _s4="-"; _s6="-"; }
+                # A family the subnet default does not route ("-", "block",
+                # v6 "direct") maps to block = skipped by gateway_ok
+                case "${_s4:--}" in -|block) _s4="block" ;; esac
+                case "${_s6:--}" in -|block|direct) _s6="block" ;; esac
+                [ "$_s4$_s6" = "blockblock" ] \
+                    && fail "HEALTH_CHECK_EGRESS lists 'default' but the default gateway routes nothing"
+                probe_arm || fail "could not install the probe chain"
+                gateway_ok "default" "$vpn_gateway_table" "$_s4" "$_s6"
+                ;;
+            *)
+                _line="$(awk -v n="$_p" '$1 == n { print; exit }' "$vpngw_state_dir/gateways" 2>/dev/null)"
+                [ -n "$_line" ] || fail "HEALTH_CHECK_EGRESS lists unknown gateway '$_p'"
+                probe_arm || fail "could not install the probe chain"
+                gateway_ok "$_p" \
+                    "$(echo "$_line" | awk '{ print $2 }')" \
+                    "$(echo "$_line" | awk '{ print $3 }')" \
+                    "$(echo "$_line" | awk '{ print $4 }')"
+                ;;
+        esac
+        EGRESS_OK="$EGRESS_OK${EGRESS_OK:+,}$_p"
+    done
+    probe_cleanup
+fi
+
+# ---- Healthy ------------------------------------------------------------------
+
+CLIENTS=""
+if [ -d "$vpngw_state_dir/sessions" ]; then
+    CLIENTS="$(find "$vpngw_state_dir/sessions" -type f 2>/dev/null | wc -l)"
+fi
+echo "healthy: ocserv up (pid $OCSERV_PID)${CLIENTS:+, $CLIENTS client(s)}${EGRESS_OK:+; egress ok: $EGRESS_OK}"
+exit 0

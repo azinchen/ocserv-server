@@ -152,6 +152,12 @@ COPY --from=rootfs /rootfs/ /
 # Runtime knobs
 ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
 
+# Report container health from the server state. start-period covers ocserv
+# startup including gateway/bypass initialization and pool loading.
+# Opt-in: the probe reports healthy unless HEALTH_CHECK_ENABLED=true is set.
+HEALTHCHECK --interval=60s --timeout=15s --start-period=60s --retries=3 \
+    CMD ["/usr/local/bin/healthcheck"]
+
 VOLUME ["/etc/ocserv"]
 EXPOSE 443/tcp 443/udp
 

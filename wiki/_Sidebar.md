@@ -17,6 +17,7 @@
 - [[Networking NAT and Routing]]
 - [[Gateway Mode]]
 - [[Destination Bypass]]
+- [[Health Monitor]]
 - [[Clients and Devices]]
 
 **Under the hood**

@@ -28,6 +28,7 @@ OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a small self
 - **🛡️ Fail-closed kill switch** — nftables next-hop guards on every routed path: if an upstream is down, clients lose internet rather than leak ([details][wiki-killswitch])
 - **🔄 Hot-reload everything** — user maps, pool lists, DNS-named gateway addresses and TLS certificates all reload live, without dropping sessions ([details][wiki-reload])
 - **🔒 Reverse-proxy & Let's Encrypt friendly** — share SWAG's certificates; renewals are picked up without a restart ([details][wiki-certs])
+- **🩺 Opt-in health monitor** — Docker-native `HEALTHCHECK`: server liveness, routing integrity, and (optionally) real egress probes per gateway ([details][wiki-health])
 - **📵 IPv6 without leaks** — optional NAT66; when an upstream has no IPv6, client IPv6 is rejected fail-closed instead of escaping ([details][wiki-ipv6])
 - **📦 Multi-arch, from source** — amd64 / arm64 / riscv64 images, ocserv built from source, supervised by s6-overlay
 
@@ -151,6 +152,14 @@ Grouped by feature; every variable is one line here — the **[Configuration Ref
 | `VPN_BYPASS_RULE_PRIO` | `800` | Priority of the bypass policy rules (advanced). |
 | `VPN_BYPASS_MARK` | `0xbc` | Base fwmark for bypassed traffic (advanced). |
 
+### Health monitor — [details][wiki-health]
+
+| Variable | Default | Description |
+|---|---|---|
+| `HEALTH_CHECK_ENABLED` | `false` | `true` = the Docker `HEALTHCHECK` probe checks server liveness + routing integrity. |
+| `HEALTH_CHECK_EGRESS` | _(unset)_ | Egress paths that also gate health: `direct`, gateway names, `default`, `all` (join with `+`). |
+| `HEALTH_CHECK_URL` | `https://1.1.1.1/…` | URL(s) for the direct egress probe, `;`-separated. |
+
 ### Certificate hot-reload — [details][wiki-certs]
 
 | Variable | Default | Description |
@@ -219,6 +228,7 @@ MIT — see [LICENSE](LICENSE).
 [wiki-network]: https://github.com/azinchen/ocserv-server/wiki/Networking-NAT-and-Routing
 [wiki-ipv6]: https://github.com/azinchen/ocserv-server/wiki/Networking-NAT-and-Routing#ipv6
 [wiki-certs]: https://github.com/azinchen/ocserv-server/wiki/Reverse-Proxy-and-Certificates
+[wiki-health]: https://github.com/azinchen/ocserv-server/wiki/Health-Monitor
 [wiki-clients]: https://github.com/azinchen/ocserv-server/wiki/Clients-and-Devices
 [wiki-troubleshoot]: https://github.com/azinchen/ocserv-server/wiki/Troubleshooting
 [wiki-faq]: https://github.com/azinchen/ocserv-server/wiki/FAQ
