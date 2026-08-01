@@ -18,7 +18,7 @@ OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a small self
 
 ## ✨ Key Features
 
-- **🔐 OpenConnect / AnyConnect protocol** — works with the `openconnect` client, Cisco AnyConnect apps, and routers such as Keenetic / Netcraze, OpenWrt and GL.iNet ([details][wiki-clients])
+- **🔐 Broad client support** — everything ocserv supports (the image runs it unmodified): the `openconnect` client, Cisco AnyConnect / Secure Client, mobile apps, and routers such as Keenetic / Netcraze, OpenWrt and GL.iNet ([details][wiki-clients])
 - **🚀 Self-configuring networking** — NAT, forwarding and MSS clamping set up automatically with nftables; just mount a config and go ([details][wiki-network])
 - **🕵️ Camouflage mode** — to probes and DPI the server looks like an ordinary HTTPS website; only clients that know the secret reach the VPN ([details][wiki-camo])
 - **🚪 Gateway mode** — route clients out through upstream VPN containers (e.g. NordVPN) instead of the host's connection ([details][wiki-gateway])
