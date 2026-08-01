@@ -1,7 +1,7 @@
 # FAQ
 
 **What protocol does this use? Which clients work?**
-The OpenConnect / Cisco AnyConnect SSL-VPN protocol. Works with the `openconnect` client, Cisco AnyConnect / Secure Client, mobile OpenConnect apps, and routers like Keenetic / Netcraze, OpenWrt and GL.iNet. See [[Clients and Devices]].
+Everything ocserv supports — the image runs unmodified ocserv, so it is not limited to one protocol. In practice most clients use the OpenConnect / AnyConnect-compatible mode: the `openconnect` client, Cisco AnyConnect / Secure Client, mobile OpenConnect apps, and routers like Keenetic / Netcraze, OpenWrt and GL.iNet. See [[Clients and Devices]].
 
 **Which image tag should I use?**
 `ghcr.io/azinchen/ocserv-server:dev` for the latest development build (the `main` branch), or `azinchen/ocserv-server:latest` / a pinned `:x.y.z` for releases. See [[Building and CI]].
