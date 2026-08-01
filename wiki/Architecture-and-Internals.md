@@ -84,7 +84,7 @@ All env-var defaults live in one helper, `/usr/local/bin/backend-functions`, whi
 | `/usr/sbin/ocserv`, `/usr/sbin/ocserv-worker` | The server |
 | `/usr/bin/occtl`, `/usr/bin/ocpasswd` | Control + user tools |
 | `/usr/libexec/ocserv-fw` | Per-user firewall helper (nftables) |
-| `/usr/local/bin/` | Helper scripts: `backend-functions` (shared env/config helpers) and the admin commands `network-diagnostic`, `vpngw-reload`, `vpngw-gw-resolve`, `bypass-reload`, `bypass-fetch`, `cert-reload` (all runnable via `docker exec`) |
+| `/usr/local/bin/` | Helper scripts: `backend-functions` (shared env/config helpers) and the admin commands `network-diagnostic`, `healthcheck` (the Docker health probe), `vpngw-reload`, `vpngw-gw-resolve`, `bypass-reload`, `bypass-fetch`, `cert-reload` (all runnable via `docker exec`) |
 | `/etc/ocserv/pools/` | Destination-bypass pool lists (`<name>.list`, on your volume) |
 | `/run/ocserv/` | PID + control sockets |
 | `/run/ocserv-vpngw/` | Gateway/bypass runtime state (parsed gateways, user maps, per-session records) |

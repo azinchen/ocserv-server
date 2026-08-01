@@ -13,6 +13,7 @@ These are read by the container's startup scripts (`backend-functions`) and driv
 | [Gateway mode](#gateway-mode) | Routing clients out through upstream VPNs | [[Gateway Mode]] |
 | [Destination bypass](#destination-bypass) | Routing by destination (pools, targets) | [[Destination Bypass]] |
 | [Certificate hot-reload](#certificate-hot-reload) | Reloading renewed TLS certs without restart | [[Reverse Proxy and Certificates]] |
+| [Health monitor](#health-monitor) | Docker-native health probe | [[Health Monitor]] |
 
 ### Core networking
 
@@ -77,6 +78,16 @@ Route traffic **by destination**: CIDR pools whose matched traffic exits direct,
 |---|---|---|
 | `CERT_WATCH` | `0` | When `1`, the `svc-cert-watch` service watches the `server-cert`/`server-key` files declared in `ocserv.conf` and sends ocserv a `SIGHUP` (via `cert-reload`) whenever one changes, so a renewed certificate is reloaded **without a container restart** and without dropping live sessions. Relative cert paths are resolved against the `ocserv.conf` directory. Run `docker exec <container> cert-reload` to force one reload. See [Reverse Proxy and Certificates#certificate-renewal](Reverse-Proxy-and-Certificates#certificate-renewal). |
 | `CERT_WATCH_INTERVAL` | `0` | Polling fallback for `CERT_WATCH`, in seconds (`0` = off). When positive, `svc-cert-poll` re-stats the same cert files every N seconds and reloads ocserv when their mtime/size changes — for filesystems where `inotify` doesn't deliver events (e.g. an **NFS-backed** cert directory). `stat` follows symlinks, so a certbot `live`→`archive` re-link is detected. Prefer `CERT_WATCH=1` on local/bind-mounted directories; use this where inotify can't work. Both may be set (reloads are idempotent), but normally you pick one. |
+
+### Health monitor
+
+Opt-in Docker `HEALTHCHECK` probe. Feature guide: [[Health Monitor]].
+
+| Variable | Default | Description |
+|---|---|---|
+| `HEALTH_CHECK_ENABLED` | `false` | Master switch. The baked `HEALTHCHECK` instruction always fires; when this is not `true` the probe reports healthy without checking anything. When enabled it gates on server liveness (process, listener, `occtl`) and routing integrity (NAT/kill-switch/bypass tables present when configured). |
+| `HEALTH_CHECK_EGRESS` | _(unset)_ | Egress paths that also gate health, joined with `+`: `direct`, named gateway(s), `default`, or `all` — each is verified with a real HTTPS fetch through its routing table. Opt-in on purpose: an upstream failure should flip container health only if you would act on it (restarting ocserv cannot fix an upstream). See [Health Monitor#why-gateway-egress-is-opt-in](Health-Monitor#why-gateway-egress-is-opt-in). |
+| `HEALTH_CHECK_URL` | `https://1.1.1.1/cdn-cgi/trace` | URL(s) for the **direct** egress probe, `;`-separated, first success wins. Gateway probes use the built-in IP-literal endpoint. |
 
 > **About `PUID`/`PGID`:** this image does **not** implement LinuxServer-style `PUID`/`PGID` user remapping. Setting them has no effect; ocserv drops privileges internally via the `run-as-user`/`run-as-group` directives in `ocserv.conf`.
 
