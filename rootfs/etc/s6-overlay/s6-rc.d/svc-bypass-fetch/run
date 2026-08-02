@@ -5,8 +5,11 @@
 # VPN_BYPASS_UPDATE_INTERVAL>0 and VPN_BYPASS_SOURCES_FILE is set, run
 # bypass-fetch on that interval so published country/feed lists stay current
 # without an external process. At startup, pools whose list file is MISSING
-# are fetched immediately (first boot with an empty volume); existing files
-# are trusted until the first interval elapses.
+# are fetched immediately (first boot with an empty volume), and so are pools
+# whose last successful fetch (.<pool>.stamp, falling back to the list's
+# mtime) is already older than the interval - without that catch-up, a
+# container restarted more often than the interval would NEVER refetch,
+# because the loop below sleeps a full interval before its first run.
 #
 # When fetching is disabled (or nothing to fetch) the service idles, so it can
 # stay in the s6 user bundle unconditionally.
@@ -27,13 +30,21 @@ if [ ! -f "$vpngw_state_dir/bypass_pools" ]; then
     exec sleep infinity
 fi
 
+now="$(date +%s)"
 missing=""
 while read -r p; do
     [ -n "$p" ] || continue
-    [ -f "$vpn_bypass_pools_dir/$p.list" ] || missing="$missing $p"
+    if [ ! -f "$vpn_bypass_pools_dir/$p.list" ]; then
+        missing="$missing $p"
+        continue
+    fi
+    ref="$vpn_bypass_pools_dir/.$p.stamp"
+    [ -f "$ref" ] || ref="$vpn_bypass_pools_dir/$p.list"
+    mtime="$(stat -c %Y "$ref" 2>/dev/null || echo 0)"
+    [ $((now - mtime)) -ge "$vpn_bypass_update_interval" ] && missing="$missing $p"
 done < "$vpngw_state_dir/bypass_pools"
 if [ -n "$missing" ]; then
-    log "[BYPASS-FETCH] Fetching pools with no published list yet:$missing"
+    log "[BYPASS-FETCH] Fetching pools with no or outdated published list:$missing"
     # shellcheck disable=SC2086
     /usr/local/bin/bypass-fetch $missing \
         || log_error "[BYPASS-FETCH] Warning: initial fetch failed; will retry on the interval"
