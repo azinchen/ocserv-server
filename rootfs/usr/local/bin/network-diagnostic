@@ -81,8 +81,8 @@ TRACE4="$PROBE_TRACE4"
 TRACE6="$PROBE_TRACE6"
 DIAG_TMP="/tmp/ocserv-diag.$$"
 DIAG_GEO="/tmp/ocserv-diag-geo.$$"
+DIAG_WARNS="/tmp/ocserv-diag-warns.$$"
 
-WARNS=0
 HAVE_V6=0
 
 # ---- Small helpers ----------------------------------------------------------
@@ -91,7 +91,13 @@ hr() { echo "================================================================"; 
 section() { echo "### $1"; }
 ok()   { echo "[ok] $*"; }
 info() { echo "[info] $*"; }
-warn() { WARNS=$((WARNS + 1)); echo "[warn] $*"; }
+# Warnings go to a file, not a counter: they are raised inside command
+# substitutions and while|read loops (subshells, where a variable increment
+# would be lost), and the final summary replays them so a non-zero exit says
+# WHAT is wrong, not just how much.
+note_warn() { printf '%s\n' "$*" >> "$DIAG_WARNS"; }
+warn() { note_warn "$*"; echo "[warn] $*"; }
+warn_count() { [ -f "$DIAG_WARNS" ] && wc -l < "$DIAG_WARNS" || echo 0; }
 
 conf_get() { # $1 = directive; prints its value from ocserv.conf (first match)
     conf_get_all "$1" | head -1
@@ -109,10 +115,13 @@ mask2len() { # 255.255.255.0 -> 24
         print n }'
 }
 
-# Probe a URL: prints "200" when the fetch succeeded, the status code parsed
-# from busybox wget's "server returned error: HTTP/1.1 404 ..." message, or
-# "ERR <last error line>" when the exchange failed below HTTP (TLS/transport) -
-# the caller must treat ERR as inconclusive, not as a pass or fail.
+# Probe a URL: prints the HTTP status code ("200", "404", ...), "RST" when a
+# TLS session was established but the server dropped the request without any
+# HTTP response, or "ERR <detail>" when not even TLS could be completed.
+# busybox wget is tried first; when it fails below HTTP, gnutls-cli (shipped
+# in gnutls-utils, the same TLS stack ocserv itself uses) repeats the request
+# and the raw response is parsed - wget's minimal TLS helper is known to
+# stumble where a full client succeeds.
 http_probe() {
     if _hp="$(wget -T 5 -O /dev/null "$1" 2>&1)"; then
         echo 200
@@ -121,8 +130,33 @@ http_probe() {
     _hp_c="$(printf '%s\n' "$_hp" | sed -n 's|.*HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p' | head -1)"
     if [ -n "$_hp_c" ]; then
         echo "$_hp_c"
+        return
+    fi
+    tls_http_probe "$1" "$(printf '%s\n' "$_hp" | grep -vi '^Connecting' | tail -1)"
+}
+
+# gnutls-cli leg of http_probe. $1 = https URL, $2 = wget's error (reported
+# when gnutls cannot complete TLS either). The trailing sleep keeps stdin
+# open after the request so gnutls-cli does not hang up before the server
+# answers; the pipeline still ends as soon as the server closes.
+tls_http_probe() {
+    _tl_r="${1#https://}"
+    _tl_hp="${_tl_r%%/*}"
+    _tl_path="${_tl_r#"$_tl_hp"}"
+    [ -n "$_tl_path" ] || _tl_path="/"
+    _tl_h="${_tl_hp%%:*}"
+    _tl_p="${_tl_hp##*:}"
+    [ "$_tl_p" = "$_tl_h" ] && _tl_p=443
+    _tl_out="$({ printf 'GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: ocserv-diag\r\nAccept: */*\r\nConnection: close\r\n\r\n' \
+            "$_tl_path" "$_tl_h"; sleep 3; } \
+        | timeout "$PROBE_WGET_TIMEOUT" gnutls-cli --insecure -p "$_tl_p" "$_tl_h" 2>&1)"
+    _tl_c="$(printf '%s\n' "$_tl_out" | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p' | head -1)"
+    if [ -n "$_tl_c" ]; then
+        echo "$_tl_c"
+    elif printf '%s\n' "$_tl_out" | grep -q 'Handshake was completed'; then
+        echo "RST"
     else
-        echo "ERR $(printf '%s\n' "$_hp" | grep -vi '^Connecting' | tail -1)"
+        echo "ERR $2"
     fi
 }
 
@@ -231,7 +265,9 @@ diag_probe_cleanup() {
     rm -f "$DIAG_TMP" "$DIAG_GEO"
     probe_cleanup
 }
-trap diag_probe_cleanup EXIT INT TERM
+# DIAG_WARNS is removed only on exit: basic/json call diag_probe_cleanup
+# mid-run, and the warnings must survive until the final count.
+trap 'rm -f "$DIAG_WARNS"; diag_probe_cleanup' EXIT INT TERM
 
 diag_probe_arm() {
     probe_arm && return 0
@@ -456,7 +492,7 @@ if [ "$MODE" = "basic" ]; then
     _body="$(fetch_url "$TRACE4")" || _body=""
     _direct=""
     [ -n "$_body" ] && _direct="$(trace_pretty "$_body")"
-    [ -n "$_direct" ] || WARNS=$((WARNS + 1))
+    [ -n "$_direct" ] || note_warn "direct egress UNREACHABLE"
     echo "ocserv: $SERVER_STATE, $CONNECTED client(s); direct egress: ${_direct:-UNREACHABLE}"
     _body6="$(fetch_url "$TRACE6")" || _body6=""
     [ -n "$_body6" ] \
@@ -465,12 +501,12 @@ if [ "$MODE" = "basic" ]; then
         while read -r _name _tbl _g4 _g6; do
             [ -n "$_name" ] || continue
             if [ "$_g4" != "block" ]; then
-                _r="$(probe_via_table "$_tbl" 4)" || { _r="UNREACHABLE"; WARNS=$((WARNS + 1)); }
+                _r="$(probe_via_table "$_tbl" 4)" || { _r="UNREACHABLE"; note_warn "gateway $_name v4 egress UNREACHABLE"; }
             else
                 _r="v4 blocked"
             fi
             if [ "$_g6" != "block" ]; then
-                _r6="$(probe_via_table "$_tbl" 6)" || { _r6="UNREACHABLE"; WARNS=$((WARNS + 1)); }
+                _r6="$(probe_via_table "$_tbl" 6)" || { _r6="UNREACHABLE"; note_warn "gateway $_name v6 egress UNREACHABLE"; }
                 _r="$_r / v6: $_r6"
             fi
             echo "gateway $_name: $_r"
@@ -478,7 +514,7 @@ if [ "$MODE" = "basic" ]; then
         diag_probe_cleanup
     fi
     [ -n "$OCSERV_PID" ] || exit 1
-    [ "$WARNS" = 0 ] || exit 1
+    [ "$(warn_count)" = 0 ] || exit 1
     exit 0
 fi
 
@@ -503,14 +539,14 @@ if [ "$MODE" = "json" ]; then
                 if _r="$(probe_via_table "$_tbl" 4)"; then
                     _e4="\"$(json_escape "$_r")\""
                 else
-                    _e4="\"UNREACHABLE\""; WARNS=$((WARNS + 1))
+                    _e4="\"UNREACHABLE\""; note_warn "gateway $_name v4 egress UNREACHABLE"
                 fi
             fi
             if [ "$_g6" != "block" ]; then
                 if _r="$(probe_via_table "$_tbl" 6)"; then
                     _e6="\"$(json_escape "$_r")\""
                 else
-                    _e6="\"UNREACHABLE\""; WARNS=$((WARNS + 1))
+                    _e6="\"UNREACHABLE\""; note_warn "gateway $_name v6 egress UNREACHABLE"
                 fi
             fi
             _j_gws="$_j_gws,{\"name\":\"$(json_escape "$_name")\",\"table\":$_tbl,\"ipv4\":\"$_g4\",\"ipv6\":\"$_g6\",\"egress4\":$_e4,\"egress6\":$_e6}"
@@ -549,7 +585,9 @@ if [ "$MODE" = "json" ]; then
                 _lines="$(wc -l < "$_lf")"
                 _a="$(file_age "$_lf")"; [ -n "$_a" ] && _age="$_a"
             fi
-            _j_pools="$_j_pools,{\"name\":\"$(json_escape "$_p")\",\"target\":\"$(json_escape "$_t")\",\"mark\":$_m,\"v4\":$(nft_set_count "pool_${_p}_v4"),\"v6\":$(nft_set_count "pool_${_p}_v6"),\"subscribers_v4\":$(nft_set_count "users_${_p}_v4"),\"subscribers_v6\":$(nft_set_count "users_${_p}_v6"),\"list_lines\":$_lines,\"list_age_seconds\":$_age}"
+            _fa="null"
+            _a="$(file_age "$vpn_bypass_pools_dir/.$_p.stamp")"; [ -n "$_a" ] && _fa="$_a"
+            _j_pools="$_j_pools,{\"name\":\"$(json_escape "$_p")\",\"target\":\"$(json_escape "$_t")\",\"mark\":$_m,\"v4\":$(nft_set_count "pool_${_p}_v4"),\"v6\":$(nft_set_count "pool_${_p}_v6"),\"subscribers_v4\":$(nft_set_count "users_${_p}_v4"),\"subscribers_v6\":$(nft_set_count "users_${_p}_v6"),\"list_lines\":$_lines,\"list_age_seconds\":$_age,\"fetch_age_seconds\":$_fa}"
         done < "$vpngw_state_dir/bypass_targets"
     fi
 
@@ -558,13 +596,13 @@ if [ "$MODE" = "json" ]; then
         _cf="$(conf_path "$_cf")"
         if [ ! -f "$_cf" ]; then
             _j_certs="$_j_certs,{\"file\":\"$(json_escape "$_cf")\",\"error\":\"missing\"}"
-            WARNS=$((WARNS + 1))
+            note_warn "server-cert $_cf: file missing"
             continue
         fi
         if cert_parse "$_cf"; then
             _ss=false
             [ -n "$CERT_SUBJECT" ] && [ "$CERT_SUBJECT" = "$CERT_ISSUER" ] && _ss=true
-            [ -n "$CERT_DAYS" ] && [ "$CERT_DAYS" -lt 14 ] && WARNS=$((WARNS + 1))
+            [ -n "$CERT_DAYS" ] && [ "$CERT_DAYS" -lt 14 ] && note_warn "certificate $_cf expires in $CERT_DAYS day(s)"
             _j_certs="$_j_certs,{\"file\":\"$(json_escape "$_cf")\",\"subject\":\"$(json_escape "$CERT_SUBJECT")\",\"issuer\":\"$(json_escape "$CERT_ISSUER")\",\"self_signed\":$_ss,\"not_after\":\"$(json_escape "$CERT_NOTAFTER")\",\"days_left\":${CERT_DAYS:-null}}"
         else
             _j_certs="$_j_certs,{\"file\":\"$(json_escape "$_cf")\",\"error\":\"unparseable\"}"
@@ -575,14 +613,14 @@ if [ "$MODE" = "json" ]; then
     _ks=false;   nft list table inet ocserv_gw >/dev/null 2>&1 && _ks=true
     _byp=false;  nft list table inet ocserv_bypass >/dev/null 2>&1 && _byp=true
     _run=false;  [ -n "$OCSERV_PID" ] && _run=true
-    [ -n "$OCSERV_PID" ] || WARNS=$((WARNS + 1))
+    [ -n "$OCSERV_PID" ] || note_warn "ocserv is not running"
 
     printf '{"server":{"running":%s,"pid":%s,"version":"%s","clients":%s},"config":{"vpn_subnet":"%s","subnet_match":%s,"camouflage":%s},"direct":{"egress4":%s,"egress6":%s},"gateways":[%s],"clients":[%s],"bypass_pools":[%s],"certificates":[%s],"tables":{"nat":%s,"killswitch":%s,"bypass":%s},"warnings":%s}\n' \
         "$_run" "${OCSERV_PID:-null}" "$(json_escape "$(ocserv --version 2>&1 | head -1)")" "$CONNECTED" \
         "$vpn_subnet" "$_match" "$([ "$(conf_get camouflage)" = "true" ] && echo true || echo false)" \
         "$_d4" "$_d6" "${_j_gws#,}" "${_j_cl#,}" "${_j_pools#,}" "${_j_certs#,}" \
-        "$_nat" "$_ks" "$_byp" "$WARNS"
-    [ "$WARNS" = 0 ] || exit 1
+        "$_nat" "$_ks" "$_byp" "$(warn_count)"
+    [ "$(warn_count)" = 0 ] || exit 1
     exit 0
 fi
 
@@ -706,12 +744,14 @@ if [ -n "$OCSERV_PID" ]; then
             200)
                 warn "probe WITHOUT the secret got HTTP 200 - camouflage does not seem to gate the handshake"
                 ;;
+            RST)
+                # TLS completed, then the request was dropped with no HTTP
+                # response: camouflage IS refusing strangers, it just resets
+                # instead of answering like a website would.
+                ok "probe without the secret was dropped after the TLS handshake (camouflage gates the endpoint; note a real website would answer, e.g. 404)"
+                ;;
             ERR*)
-                # busybox wget's minimal TLS client may not complete a handshake
-                # with the server's TLS priorities - that says nothing about
-                # camouflage, so report it as inconclusive, not as a failure.
-                info "local probe could not complete a TLS/HTTP exchange (${_st#ERR }) - self-test inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/"
-                _cs_secret=""
+                info "local probe could not complete a TLS handshake (${_st#ERR }) - self-test inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/"
                 ;;
             *)
                 ok "probe without the secret got HTTP $_st (server presents as a plain website)"
@@ -721,7 +761,8 @@ if [ -n "$OCSERV_PID" ]; then
             _st="$(http_probe "https://127.0.0.1:$_cs_port/?$_cs_secret")"
             case "$_st" in
                 200)  ok "probe with the configured secret got HTTP 200 (VPN endpoint reachable)" ;;
-                ERR*) info "probe with the secret could not complete a TLS/HTTP exchange (${_st#ERR }) - inconclusive" ;;
+                RST)  warn "probe WITH the secret was dropped without an HTTP response - check the secret in client URLs (a correct secret should reach the VPN endpoint)" ;;
+                ERR*) info "probe with the secret could not complete a TLS handshake (${_st#ERR }) - inconclusive" ;;
                 *)    warn "probe WITH the secret got HTTP $_st - clients using the secret may be failing too" ;;
             esac
         fi
@@ -731,7 +772,8 @@ if [ -n "$OCSERV_PID" ]; then
         _st="$(http_probe "https://127.0.0.1:$_cs_port/")"
         case "$_st" in
             200)  ok "VPN endpoint answers on port $_cs_port (HTTP 200, camouflage off)" ;;
-            ERR*) info "local probe could not complete a TLS/HTTP exchange (${_st#ERR }) - inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/" ;;
+            RST)  info "endpoint completed TLS but dropped a plain GET on port $_cs_port (a real client handshake may still succeed)" ;;
+            ERR*) info "local probe could not complete a TLS handshake (${_st#ERR }) - inconclusive; verify from outside: curl -s -o /dev/null -w '%{http_code}' https://<host>:$_cs_port/" ;;
             *)    info "endpoint answered HTTP $_st on port $_cs_port (a real client handshake may still succeed)" ;;
         esac
     fi
@@ -962,11 +1004,23 @@ if [ -f "$vpngw_state_dir/bypass_pools" ]; then
         if [ -f "$_lf" ]; then
             _age="$(file_age "$_lf")"
             _lfs="$(wc -l < "$_lf") lines ($(age_fmt "${_age:-0}") old)"
+            # Freshness = last SUCCESSFUL fetch, not the list's mtime: the
+            # fetcher deliberately skips republishing an unchanged list, so a
+            # stable upstream keeps the mtime old while fetches succeed daily.
+            # It stamps .<pool>.stamp on every success; fall back to the
+            # list's mtime when no stamp exists (external publisher, or
+            # fetching never ran).
+            _fage="$(file_age "$vpn_bypass_pools_dir/.$_p.stamp")"
+            if [ -n "$_fage" ]; then
+                _lfs="$_lfs, fetched $(age_fmt "$_fage") ago"
+            else
+                _fage="$_age"
+            fi
             # Freshness vs the fetcher interval (allow one missed run)
             if [ -n "$vpn_bypass_sources_file" ] && [ "${vpn_bypass_update_interval:-0}" -gt 0 ] 2>/dev/null \
-                && [ -n "$_age" ] && [ "$_age" -gt $((vpn_bypass_update_interval * 2)) ] \
+                && [ -n "$_fage" ] && [ "$_fage" -gt $((vpn_bypass_update_interval * 2)) ] \
                 && grep -q "^[[:space:]]*${_p}[[:space:]]" "$vpn_bypass_sources_file" 2>/dev/null; then
-                _stale_pools="${_stale_pools:-} $_p($(age_fmt "$_age"))"
+                _stale_pools="${_stale_pools:-} $_p($(age_fmt "$_fage"))"
             fi
         else
             _lfs="MISSING (empty pool)"
@@ -975,7 +1029,7 @@ if [ -f "$vpngw_state_dir/bypass_pools" ]; then
             "$_n4 + $_n6 intervals" "$_sub" "$_lfs"
     done < "$vpngw_state_dir/bypass_targets"
     [ -n "${_stale_pools:-}" ] \
-        && warn "pool list(s) older than 2x VPN_BYPASS_UPDATE_INTERVAL:${_stale_pools} - check bypass-fetch (docker logs, grep BYPASS-FETCH)"
+        && warn "pool(s) without a successful fetch for over 2x VPN_BYPASS_UPDATE_INTERVAL:${_stale_pools} - check bypass-fetch (docker logs, grep BYPASS-FETCH)"
 
     # Probe each distinct bypass target through its LIVE fwmark rule: proves
     # the prio-800 policy rules and the target's routing table end to end.
@@ -991,7 +1045,7 @@ if [ -f "$vpngw_state_dir/bypass_pools" ]; then
                     printf '%-30s : %s\n' "target block (mark $_m)" "not probeable (rejected in the forward path only)"
                     ;;
                 *)
-                    _r="$(probe_via_mark "$_m" 4)" || { _r="UNREACHABLE"; WARNS=$((WARNS + 1)); }
+                    _r="$(probe_via_mark "$_m" 4)" || { _r="UNREACHABLE"; note_warn "bypass target $_t (mark $_m) v4 egress UNREACHABLE"; }
                     printf '%-30s : %s\n' "target $_t (mark $_m) v4" "$_r"
                     _probe6=0
                     if [ "$_t" = "direct" ]; then
@@ -1131,10 +1185,12 @@ if [ -f "$vpngw_state_dir/bypass_pools" ]; then
         warn "bypass configured but its nft table is missing"
     fi
 fi
+WARNS="$(warn_count)"
 if [ "$WARNS" = 0 ]; then
     echo "Done - no warnings."
 else
-    echo "Done - $WARNS warning(s) above."
+    echo "Done - $WARNS warning(s):"
+    sed 's/^/  - /' "$DIAG_WARNS"
 fi
 hr
 [ "$WARNS" = 0 ] || exit 1

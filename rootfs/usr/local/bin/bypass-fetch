@@ -18,6 +18,9 @@
 #   * if EVERY source failed, the published list is left untouched
 #     (last-known-good) and the exit status is non-zero;
 #   * an unchanged result is not republished (no pointless reload churn);
+#   * every successful fetch - changed or not - touches a marker file
+#     (.<pool>.stamp next to the list), so freshness checks can tell "the
+#     upstream list has not changed in days" apart from "fetching is broken";
 #   * publishing is write-tmp + mv, so a concurrent reload (or the
 #     svc-bypass-watch watcher) never reads a half-written file.
 #
@@ -111,6 +114,11 @@ for pool in "$@"; do
     fi
 
     sort -u "$tmp_dir/merged" > "$tmp_dir/new"
+    # The fetch itself succeeded - record that, whether or not the content
+    # changed. The stamp lives in the pools dir (persists across restarts);
+    # the reload watcher ignores non-.list names, and a read-only pools dir
+    # just leaves freshness checks on the list's own mtime.
+    touch "$vpn_bypass_pools_dir/.$pool.stamp" 2>/dev/null || true
     # Skip publish + reload when the entry set is unchanged (compare against
     # the published list without our generated header comments).
     if [ -f "$vpn_bypass_pools_dir/$pool.list" ] \
