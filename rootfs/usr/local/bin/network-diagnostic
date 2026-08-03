@@ -645,6 +645,32 @@ case "$_ocs" in
     *"General info:"*) printf '%s\n' "$_ocs" | awk '/^General info:/ { f = 1 } /^Current stats period:/ { exit } f' ;;
     *) printf '%s\n' "$_ocs" ;;
 esac
+# Derived from the "Current stats period" block (not dumped raw: its RX/TX
+# and session-time figures update only on disconnect and mislead). The error
+# counter is the one real signal - abnormal endings (TLS/transport drops,
+# roaming clients) and fail-closed hook rejections both land there.
+occtl_field() { # $1 = label -> value (last match: period fields come last)
+    printf '%s\n' "$_ocs" | sed -n "s/^[[:space:]]*$1:[[:space:]]*//p" | tail -1
+}
+_sh="$(occtl_field "Sessions handled")"
+if [ -n "$_sh" ]; then
+    _st="$(occtl_field "Timed out sessions")"
+    _si="$(occtl_field "Timed out (idle) sessions")"
+    _se="$(occtl_field "Closed due to error sessions")"
+    _sa="$(occtl_field "Authentication failures")"
+    echo "sessions since stats reset     : $_sh handled, ${_st:-0} timed out, ${_si:-0} idle-dropped, ${_se:-0} closed on error (reset: $(occtl_field "Last stats reset"))"
+    if [ "${_se:-0}" -gt 0 ] 2>/dev/null; then
+        info "$_se session(s) closed on error: abnormal endings - TLS/transport drops and roaming clients count here, and so does a fail-closed gateway rejection; cross-check session-report's reconnect loops"
+    fi
+    if [ "${_sa:-0}" -gt 0 ] 2>/dev/null; then
+        info "$_sa authentication failure(s) since the stats reset - repeated failures ban the source IP (see below / occtl show ip ban points)"
+    fi
+fi
+_bans="$(printf '%s\n' "$_ocs" | sed -n 's/^[[:space:]]*IPs in ban list:[[:space:]]*//p' | head -1)"
+if [ "${_bans:-0}" -gt 0 ] 2>/dev/null; then
+    echo "banned IPs (occtl show ip bans):"
+    occtl_show show ip bans
+fi
 echo
 
 section "Listening sockets"
