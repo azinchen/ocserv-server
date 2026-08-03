@@ -696,6 +696,7 @@ echo "VPN_USER_BYPASS_FILE           : ${vpn_user_bypass_file:-<unset>} (watch: 
 echo "VPN_GATEWAY_BYPASS             : ${vpn_gateway_bypass:-<unset>}"
 echo "VPN_GATEWAYS_BYPASS            : ${vpn_gateways_bypass:-<unset>}"
 echo "VPN_BYPASS_TARGETS             : ${vpn_bypass_targets:-<unset>}"
+echo "VPN_BYPASS_TARGETS_FILE        : ${vpn_bypass_targets_file:-<unset>}"
 echo "VPN_BYPASS_POOLS_DIR           : $vpn_bypass_pools_dir (watch: $vpn_bypass_watch)"
 echo "VPN_BYPASS_SOURCES_FILE        : ${vpn_bypass_sources_file:-<unset>} (interval: $vpn_bypass_update_interval)"
 echo "CERT_WATCH / _INTERVAL         : $cert_watch / $cert_watch_interval"

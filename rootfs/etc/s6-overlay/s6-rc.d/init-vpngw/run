@@ -63,7 +63,7 @@ gw_active=0
 case "$vpn_gateway6" in ""|direct) ;; *) gw_active=1 ;; esac
 if [ "$gw_active" = 0 ]; then
     restore_config
-    if [ -n "$vpn_gateway_bypass$vpn_gateways_bypass$vpn_user_bypass$vpn_user_bypass_file$vpn_bypass_targets" ]; then
+    if [ -n "$vpn_gateway_bypass$vpn_gateways_bypass$vpn_user_bypass$vpn_user_bypass_file$vpn_bypass_targets$vpn_bypass_targets_file" ]; then
         log_error "[INIT-VPNGW] Warning: destination-bypass settings ignored - no gateway is configured, so clients already exit direct"
     fi
     log "[INIT-VPNGW] No gateway configured; clients exit via the default route"
@@ -290,10 +290,12 @@ if [ -n "$bypass_pools_used" ]; then
     fi
     [ -n "$bypass_default" ] && printf '%s\n' "$bypass_default" > "$vpngw_state_dir/bypass_default"
 
-    # Per-pool targets (VPN_BYPASS_TARGETS, "pool=target,..."). Validate every
-    # entry: the pool must be attached somewhere above, the target must be
-    # "direct", "block"/"drop" or a defined named gateway.
-    kv_pairs "$vpn_bypass_targets" \
+    # Per-pool targets: VPN_BYPASS_TARGETS ("pool=target,...") merged with
+    # VPN_BYPASS_TARGETS_FILE ("pool target" lines, file wins on conflict,
+    # read once at startup like the pool set itself). Validate every entry:
+    # the pool must be attached somewhere above, the target must be "direct",
+    # "block"/"drop" or a defined named gateway.
+    kv_merge_env_file "$vpn_bypass_targets" "$vpn_bypass_targets_file" \
         | awk '{ if ($2 == "drop") $2 = "block"; print $1, $2 }' \
         > "$vpngw_state_dir/bypass_targets.map"
     while read -r pname ptarget; do
@@ -379,8 +381,8 @@ if [ -n "$bypass_pools_used" ]; then
         log "[INIT-VPNGW] Bypass pool '$p' -> $t (mark $m)"
     done < "$vpngw_state_dir/bypass_targets"
     log "[INIT-VPNGW] Destination bypass active ($(cat "$vpngw_state_dir/bypass_mode") mode; pools:$bypass_pools_used; base mark $vpn_bypass_mark prio $vpn_bypass_rule_prio)"
-elif [ -n "$vpn_bypass_targets" ]; then
-    log_error "[INIT-VPNGW] Warning: VPN_BYPASS_TARGETS ignored - no bypass pool is attached (VPN_GATEWAY_BYPASS / VPN_GATEWAYS_BYPASS / VPN_USER_BYPASS)"
+elif [ -n "$vpn_bypass_targets$vpn_bypass_targets_file" ]; then
+    log_error "[INIT-VPNGW] Warning: VPN_BYPASS_TARGETS[_FILE] ignored - no bypass pool is attached (VPN_GATEWAY_BYPASS / VPN_GATEWAYS_BYPASS / VPN_USER_BYPASS)"
 fi
 
 # ---- Subnet default for unmapped users -------------------------------------

@@ -147,6 +147,7 @@ Grouped by feature; every variable is one line here — the **[Configuration Ref
 | `VPN_USER_BYPASS_FILE` | _(unset)_ | Per-user map in a file; hot-reload with `vpngw-reload`. |
 | `VPN_USER_BYPASS_WATCH` | `0` | `1` = reload the bypass map automatically on every file change. |
 | `VPN_BYPASS_TARGETS` | _(unset)_ | Per-pool target: `ru=direct,streaming=us,ads=block` (default `direct`). |
+| `VPN_BYPASS_TARGETS_FILE` | _(unset)_ | File alternative (`pool target` lines); read at startup, file wins. |
 | `VPN_BYPASS_WATCH` | `0` | `1` = reload a pool automatically when its list file changes. |
 | `VPN_BYPASS_SOURCES_FILE` | _(unset)_ | Download sources for the built-in list fetcher (`pool url` lines). |
 | `VPN_BYPASS_UPDATE_INTERVAL` | `0` | Auto-fetch the lists every N seconds (e.g. `86400`). |

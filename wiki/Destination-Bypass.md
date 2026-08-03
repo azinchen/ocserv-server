@@ -7,10 +7,12 @@
 - **`block`** — reject the traffic entirely (a destination blocklist).
 
 ```
-                        ┌── destination in pool "ru"        ──▶ direct (ISP)
-client ──▶ ocserv ──────┼── destination in pool "streaming" ──▶ gateway "us"
- (mapped to gateway nl) ├── destination in pool "ads"       ──▶ blocked
-                        └── everything else                 ──▶ gateway "nl"
+client ──▶ ocserv (mapped to gateway nl)
+             │
+             ├── destination in pool "ru"        ──▶ direct (ISP)
+             ├── destination in pool "streaming" ──▶ gateway "us"
+             ├── destination in pool "ads"       ──▶ blocked
+             └── everything else                 ──▶ gateway "nl"
 ```
 
 Typical uses:
@@ -20,6 +22,8 @@ Typical uses:
 - **Blocklists:** an `ads` or `malware` pool with target `block` rejects those destinations for every subscribed user.
 
 Destination bypass is part of gateway mode — it needs at least one gateway configured (with no gateway, clients already exit direct and there is nothing to bypass).
+
+> **Want a ready-to-run setup instead of reference?** Copy the complete example: **[Bypass and Blocklists](Example-Destination-Bypass)** — country pool direct, streaming via a second exit, ads blocked, lists auto-fetched. This page explains the model and every knob.
 
 ## The model in one minute
 
@@ -48,6 +52,7 @@ environment:
 | `VPN_USER_BYPASS_FILE` | _(unset)_ | File alternative to `VPN_USER_BYPASS`, hot-reloadable. See [Hot-reloading the per-user map](#hot-reloading-the-per-user-map). |
 | `VPN_USER_BYPASS_WATCH` | `0` | `1` = auto-`vpngw-reload` when the map file changes. |
 | `VPN_BYPASS_TARGETS` | _(unset)_ | Per-pool target: `pool=target` pairs; target is `direct`, a gateway name, or `block`. See [Pool targets](#pool-targets). |
+| `VPN_BYPASS_TARGETS_FILE` | _(unset)_ | File alternative: one `pool target` per line, merged with the env var (file wins). Read at startup, like the pool set. |
 | `VPN_BYPASS_WATCH` | `0` | `1` = auto-`bypass-reload` when a pool list file changes. |
 | `VPN_BYPASS_SOURCES_FILE` | _(unset)_ | Download sources for the built-in fetcher, one `pool url` per line. See [Fetching lists automatically](#fetching-lists-automatically). |
 | `VPN_BYPASS_UPDATE_INTERVAL` | `0` | Seconds between automatic `bypass-fetch` runs (`0` = off). |
@@ -91,6 +96,15 @@ environment:
   - VPN_USER_GATEWAY=alice=nl
   - VPN_GATEWAYS_BYPASS=nl=ru+streaming+ads
   - VPN_BYPASS_TARGETS=streaming=us,ads=block   # ru stays direct (the default)
+```
+
+The same pairs can live in a file instead — **`VPN_BYPASS_TARGETS_FILE`** points at one `pool target` per line (`#` comments allowed), merged with the env variable, the file winning on a conflicting pool. Like the pool set itself it is read **once at startup** — editing it needs a restart, unlike the hot-reloadable user maps:
+
+```
+# /etc/ocserv/pools/targets.conf
+streaming   us
+ads         block
+# ru not listed -> direct
 ```
 
 A target is:

@@ -28,6 +28,8 @@ The container ships a default `ocserv.conf` template that it copies in on first 
 
 Copy one to `volumes/config/ocserv.conf` and edit it (domain, subnet, cert paths). See [[ocserv Configuration]] for what the directives mean.
 
+> Planning to chain clients through an upstream VPN, or split traffic by destination? There are complete examples for those too: [One Upstream for All](Example-Gateway-Single-Upstream), [Per-User Gateways](Example-Gateway-Per-User), [Bypass and Blocklists](Example-Destination-Bypass) — they reuse this same config directory unchanged.
+
 ## 3. Write a compose file
 
 ```yaml

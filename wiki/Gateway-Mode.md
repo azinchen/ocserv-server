@@ -9,6 +9,8 @@ client ──openconnect──▶ ocserv ──policy route──▶ nordvpn ─
 
 ocserv keeps its own network namespace and its inbound listener works normally; only the **client subnet** is steered to the upstream gateway.
 
+> **Want a ready-to-run setup instead of reference?** Copy a complete example: **[One Upstream for All](Example-Gateway-Single-Upstream)** (everyone through one VPN) or **[Per-User Gateways](Example-Gateway-Per-User)** (each user their own exit). This page explains how the machinery works and every knob it has.
+
 ## Enabling it
 
 Set `VPN_GATEWAY` to the upstream container's IP on the shared Docker network:
@@ -221,53 +223,11 @@ Gateway mode is source-routed: *who* the client is decides where **all** their t
 
 It has its own page: **[[Destination Bypass]]**.
 
-## Upstream requirements (NordVPN example)
+## Upstream requirements
 
-The upstream must forward the Docker subnet out its tunnel. The companion [NordVPN image](https://github.com/azinchen/nordvpn) does this with `FORWARD_FROM`:
+Whatever the upstream container is, it must **forward the Docker subnet out its tunnel** — ocserv SNATs clients to its own Docker-network address before handing packets over, so the upstream sees Docker-subnet sources and needs no route back to the client subnet. With the companion [NordVPN image](https://github.com/azinchen/nordvpn) that's one variable: `FORWARD_FROM=<docker network subnet>` (the Docker network, **not** the client subnet).
 
-```yaml
-networks:
-  vpnnet:
-    ipam:
-      config:
-        - subnet: 172.28.0.0/24
-
-services:
-  nordvpn:
-    image: azinchen/nordvpn:latest
-    cap_add: [NET_ADMIN]
-    devices: [/dev/net/tun]
-    sysctls:
-      - net.ipv4.ip_forward=1
-    environment:
-      - USER=service_username
-      - PASS=service_password
-      - COUNTRY=Netherlands
-      - FORWARD_FROM=172.28.0.0/24      # let the Docker net route out the tunnel
-    networks:
-      vpnnet:
-        ipv4_address: 172.28.0.2
-
-  ocserv:
-    image: azinchen/ocserv-server:latest
-    cap_add: [NET_ADMIN]
-    devices: [/dev/net/tun]
-    sysctls:
-      - net.ipv4.ip_forward=1
-    environment:
-      - VPN_SUBNET=10.20.0.0/24
-      - VPN_GATEWAY=172.28.0.2          # the nordvpn container
-    ports:
-      - "443:443/tcp"                   # published normally on ocserv itself
-      - "443:443/udp"
-    volumes:
-      - ./config:/etc/ocserv
-    networks:
-      vpnnet:
-        ipv4_address: 172.28.0.3
-```
-
-`FORWARD_FROM` must list the subnet ocserv SNATs into (the Docker network, `172.28.0.0/24`), not the client subnet.
+Complete compose files: **[One Upstream for All](Example-Gateway-Single-Upstream)** · **[Per-User Gateways](Example-Gateway-Per-User)**.
 
 ## Verify
 
