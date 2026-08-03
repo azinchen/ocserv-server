@@ -142,7 +142,8 @@ case "$reason" in
                         "$h_client" "${h_gw:--}" "$h_dev" \
                         "${h_up:--}" "${h_dn:--}" \
                         "${STATS_BYTES_IN:--}" "${STATS_BYTES_OUT:--}" \
-                        "${h_pools:--}" >> "$vpngw_state_dir/history"
+                        "${h_pools:--}" >> "$(acct_history_file)" 2>/dev/null \
+                        || log_error "[VPNGW-HOOK] Warning: cannot append to $(acct_history_file)"
                 fi
             fi
             [ -n "$ip4" ] && vpngw_cleanup_session "$ip4" "$ip6"

@@ -3,40 +3,60 @@
 #
 # session-report - who connected, when, and how much data went where.
 #
-# Active sessions first, then completed ones (newest first). Each session
-# shows its traffic split: how much went through the user's gateway and how
-# much through each attached bypass pool. Data is collected by the ocserv
-# connect/disconnect hook (per-session nft counters + a history record on
-# disconnect), so the report needs gateway mode with a per-user map - exactly
-# the deployments where "which path did the bytes take" is a question.
+# Active sessions first (with live throughput sampled over one second), then
+# completed ones (newest first). Each session shows its traffic split: how
+# much went through the user's gateway and how much through each attached
+# bypass pool. Client IPs are geolocated (city/provider) when the network
+# allows. Ends with per-user totals and a reconnect-loop check.
 #
-# The horizon is CONTAINER start: state lives on tmpfs /run, sessions cannot
-# outlive the container anyway, and an ocserv-only restart inside a running
-# container keeps the history.
+# Data is collected by the ocserv connect/disconnect hook (per-session nft
+# counters + a history record on disconnect), so the report needs gateway
+# mode with a per-user map. History lives on tmpfs by default (container
+# lifetime); set SESSION_HISTORY_FILE to a path on a volume to persist it.
 #
 # "up" is client -> world, "down" is world -> client, counted on the forward
-# path. ocserv's own session totals (shown for completed sessions) also
-# include traffic terminating in the container, e.g. tunneled DNS - a small
-# constant gap between the two is normal.
+# path. ocserv's own totals (completed sessions) also include traffic
+# terminating in the container (e.g. tunneled DNS) - a small gap is normal.
 #
-# Usage: session-report [-u|--user NAME] [-h|--help]
+# Usage: session-report [options]
+#   -u, --user NAME   only this user
+#   -j, --json        machine-readable output
+#       --no-geo      skip client IP geolocation (faster offline)
+#       --no-rate     skip the 1s throughput sampling of active sessions
+#   -h, --help        this help
 
 set -u
 
 USER_FILTER=""
+MODE=text
+DO_GEO=1
+DO_RATE=1
 while [ $# -gt 0 ]; do
     case "$1" in
         -u|--user) USER_FILTER="${2:-}"; shift ;;
-        -h|--help)
-            sed -n '3,22s/^# \{0,1\}//p' "$0"
-            exit 0
-            ;;
+        -j|--json) MODE=json ;;
+        --no-geo)  DO_GEO=0 ;;
+        --no-rate) DO_RATE=0 ;;
+        -h|--help) sed -n '4,26s/^# \{0,1\}//p' "$0"; exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
     shift
 done
 
 . /usr/local/bin/backend-functions
+
+# Reconnect-loop check: this many completed sessions shorter than FLAP_SHORT
+# seconds within the last FLAP_WINDOW seconds flags the user.
+FLAP_WINDOW=3600
+FLAP_SHORT=120
+FLAP_MIN=3
+
+TMP_BASE="/tmp/session-report.$$"
+SUMMARY="$TMP_BASE.sum"
+GEO_CACHE="$TMP_BASE.geo"
+RATE_SNAP="$TMP_BASE.rate"
+: > "$SUMMARY"
+trap 'rm -f "$SUMMARY" "$GEO_CACHE" "$RATE_SNAP"' EXIT INT TERM
 
 hr() { echo "================================================================"; }
 
@@ -65,15 +85,53 @@ dur_fmt() { # seconds -> 45s / 12m30s / 3h07m / 2d05h
         else printf "%ds", s }'
 }
 
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+json_num() { # number or JSON null for "-"/empty
+    case "$1" in ''|-|*[!0-9]*) echo null ;; *) echo "$1" ;; esac
+}
+
+json_str() { # quoted string or JSON null for "-"/empty
+    case "$1" in ''|-) echo null ;; *) echo "\"$(json_escape "$1")\"" ;; esac
+}
+
 pool_target() { # $1 = pool -> its target (direct if unknown)
     awk -v p="$1" '$1 == p { print $2; exit }' \
         "$vpngw_state_dir/bypass_targets" 2>/dev/null | grep . || echo direct
 }
 
-# Print the per-path breakdown lines for one session.
-#   $1 = gateway ("-" = default/unmapped, "direct")
-#   $2 = total up bytes (or "-")   $3 = total down bytes (or "-")
-#   $4 = "pool=up:dn,..." (or "-")
+geo_of() { # $1 = ip -> "City, CC - org" (empty on failure; cached per run)
+    [ "$DO_GEO" = 1 ] || return 0
+    case "$1" in ''|-) return 0 ;; esac
+    _g_hit="$(awk -v ip="$1" '$1 == ip { $1 = ""; sub(/^ /, ""); print; exit }' "$GEO_CACHE" 2>/dev/null)"
+    if [ -n "$_g_hit" ]; then
+        [ "$_g_hit" = "-" ] || printf '%s\n' "$_g_hit"
+        return 0
+    fi
+    _g_city=""; _g_cc=""; _g_org=""
+    _g_resp="$(wget -q -T 4 -O - "https://ipinfo.io/$1/json" 2>/dev/null)" || _g_resp=""
+    if [ -n "$_g_resp" ]; then
+        _g_city="$(printf '%s\n' "$_g_resp" | sed -n 's/.*"city"[: ]*"\([^"]*\)".*/\1/p' | head -1)"
+        _g_cc="$(printf '%s\n' "$_g_resp" | sed -n 's/.*"country"[: ]*"\([^"]*\)".*/\1/p' | head -1)"
+        _g_org="$(printf '%s\n' "$_g_resp" | sed -n 's/.*"org"[: ]*"\([^"]*\)".*/\1/p' | head -1)"
+    fi
+    if [ -z "$_g_city$_g_cc" ]; then
+        _g_resp="$(wget -q -T 4 -O - "http://ip-api.com/line/$1?fields=city,countryCode,isp" 2>/dev/null)" || _g_resp=""
+        _g_city="$(printf '%s\n' "$_g_resp" | sed -n 1p)"
+        _g_cc="$(printf '%s\n' "$_g_resp" | sed -n 2p)"
+        _g_org="$(printf '%s\n' "$_g_resp" | sed -n 3p)"
+    fi
+    _g_out=""
+    [ -n "$_g_city" ] && _g_out="$_g_city"
+    [ -n "$_g_cc" ] && _g_out="${_g_out:+$_g_out, }$_g_cc"
+    [ -n "$_g_org" ] && _g_out="${_g_out:+$_g_out - }$_g_org"
+    echo "$1 ${_g_out:--}" >> "$GEO_CACHE"
+    [ -n "$_g_out" ] && printf '%s\n' "$_g_out"
+    return 0
+}
+
+# Per-path breakdown lines (text mode).
+#   $1 = gateway   $2 = total up   $3 = total down   $4 = "pool=up:dn,..."
 breakdown() {
     _bk_gw="$1"; _bk_up="$2"; _bk_dn="$3"; _bk_pools="$4"
     [ "$_bk_up" = "-" ] && [ "$_bk_pools" = "-" ] && return 0
@@ -99,42 +157,32 @@ breakdown() {
     fi
 }
 
+# JSON pools array from "pool=up:dn,..."
+json_pools() {
+    [ "$1" = "-" ] && { echo "[]"; return; }
+    _jp_out=""
+    for _jp_e in $(printf '%s' "$1" | tr ',' ' '); do
+        _jp_p="${_jp_e%%=*}"
+        _jp_v="${_jp_e#*=}"
+        _jp_out="$_jp_out,{\"name\":\"$(json_escape "$_jp_p")\",\"target\":\"$(json_escape "$(pool_target "$_jp_p")")\",\"up\":${_jp_v%%:*},\"down\":${_jp_v##*:}}"
+    done
+    echo "[${_jp_out#,}]"
+}
+
 NOW="$(date +%s)"
 ACCT_T="$(acct_table)"
+HIST="$(acct_history_file)"
 
-hr
-echo "ocserv-server SESSION REPORT : $(date -Is 2>/dev/null || date)"
-if [ -f "$vpngw_state_dir/started" ]; then
-    _since="$(cat "$vpngw_state_dir/started")"
-    echo "Collecting since             : $(ts_fmt "$_since") (container start, $(dur_fmt $((NOW - _since))) ago)"
-fi
-hr
-echo
+ACCT_ACTIVE=1
+[ -f "$vpngw_state_dir/users" ] || ACCT_ACTIVE=0
 
-if [ ! -f "$vpngw_state_dir/users" ]; then
-    echo "Session accounting is inactive: it is collected by the per-user gateway"
-    echo "hook, so it needs gateway mode with a user map (VPN_USER_GATEWAY[_FILE])."
-    echo "For live-only info without it: occtl show users / network-diagnostic."
-    exit 0
-fi
+# ---- Gather active sessions & sample throughput -------------------------------
 
-# ---- Active sessions ---------------------------------------------------------
-
-SUMMARY="/tmp/session-report.$$"
-: > "$SUMMARY"
-trap 'rm -f "$SUMMARY"' EXIT INT TERM
-
-n_active=0
-if [ -d "$vpngw_state_dir/sessions" ]; then
-    for _rec in "$vpngw_state_dir"/sessions/*; do
-        [ -f "$_rec" ] || continue
-        n_active=$((n_active + 1))
-    done
-fi
-echo "### Active sessions ($n_active)"
-if [ "$n_active" = 0 ]; then
-    echo "(none)"
-else
+# One line per active session, matching the history layout so the render loop
+# is shared: conn NOW user ip4 ip6 client gw dev up dn - - pools
+ACTIVE="$TMP_BASE.act"
+: > "$ACTIVE"
+if [ "$ACCT_ACTIVE" = 1 ] && [ -d "$vpngw_state_dir/sessions" ]; then
     for _rec in "$vpngw_state_dir"/sessions/*; do
         [ -f "$_rec" ] || continue
         read -r s_user s_gw s_ip4 s_ip6 s_bp < "$_rec" || continue
@@ -156,41 +204,171 @@ else
                 s_pools="${s_pools:+$s_pools,}$s_p=${s_pu:-0}:${s_pd:-0}"
             done
         fi
+        printf '%s %s %s %s %s %s %s %s %s %s - - %s\n' \
+            "$s_conn" "$NOW" "$s_user" "$s_ip4" "$s_ip6" "$s_client" "$s_gw" \
+            "$s_dev" "${s_up:--}" "${s_dn:--}" "$s_pools" >> "$ACTIVE"
+        [ -n "$s_up" ] && echo "$s_ip4 $s_up ${s_dn:-0}" >> "$RATE_SNAP"
+    done
+fi
+
+# Throughput: re-read the totals after a second; rate = delta.
+RATE_DT=0
+if [ "$DO_RATE" = 1 ] && [ -s "$RATE_SNAP" ]; then
+    sleep 1
+    RATE_DT=$(( $(date +%s) - NOW ))
+    [ "$RATE_DT" -lt 1 ] && RATE_DT=1
+fi
+
+session_rate() { # $1 = ip4 -> "up_bps dn_bps" (empty when not sampled)
+    [ "$RATE_DT" -gt 0 ] || return 0
+    _sr_snap="$(awk -v ip="$1" '$1 == ip { print $2, $3; exit }' "$RATE_SNAP" 2>/dev/null)"
+    [ -n "$_sr_snap" ] || return 0
+    _sr_sid="$(acct_sid "$1")"
+    _sr_up="$(acct_counter_bytes "$ACCT_T" "a_${_sr_sid}_up")"
+    _sr_dn="$(acct_counter_bytes "$ACCT_T" "a_${_sr_sid}_dn")"
+    [ -n "$_sr_up" ] || return 0
+    echo "$(( (_sr_up - ${_sr_snap%% *}) / RATE_DT )) $(( (_sr_dn - ${_sr_snap##* }) / RATE_DT ))"
+}
+
+# Flap check over the completed sessions.
+flap_lines() { # prints "user count" per flapping user
+    [ -s "$HIST" ] || return 0
+    awk -v now="$NOW" -v win="$FLAP_WINDOW" -v short="$FLAP_SHORT" -v min="$FLAP_MIN" '
+        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ { next }
+        $2 >= now - win && ($2 - $1) < short { n[$3]++ }
+        END { for (u in n) if (n[u] >= min) print u, n[u] }' "$HIST"
+}
+
+# ---- JSON mode -----------------------------------------------------------------
+
+if [ "$MODE" = "json" ]; then
+    _j_since="null"
+    [ -f "$vpngw_state_dir/started" ] && _j_since="$(cat "$vpngw_state_dir/started")"
+
+    _j_act=""
+    while read -r a_conn _ a_user a_ip4 a_ip6 a_client a_gw a_dev a_up a_dn _ _ a_pools; do
+        [ -n "$a_user" ] || continue
+        _j_rate_u=null; _j_rate_d=null
+        _j_r="$(session_rate "$a_ip4")"
+        [ -n "$_j_r" ] && { _j_rate_u="${_j_r%% *}"; _j_rate_d="${_j_r##* }"; }
+        _j_act="$_j_act,{\"user\":\"$(json_escape "$a_user")\",\"connected\":$(json_num "$a_conn"),\"assigned_ipv4\":\"$a_ip4\",\"assigned_ipv6\":$(json_str "$a_ip6"),\"client_ip\":$(json_str "$a_client"),\"client_geo\":$(json_str "$(geo_of "$a_client")"),\"device\":$(json_str "$a_dev"),\"gateway\":$(json_str "$a_gw"),\"up\":$(json_num "$a_up"),\"down\":$(json_num "$a_dn"),\"rate_up_bps\":$_j_rate_u,\"rate_down_bps\":$_j_rate_d,\"pools\":$(json_pools "$a_pools")}"
+        _j_su="$a_up"; [ "$_j_su" = "-" ] && _j_su=0
+        _j_sd="$a_dn"; [ "$_j_sd" = "-" ] && _j_sd=0
+        echo "$a_user $_j_su $_j_sd" >> "$SUMMARY"
+    done < "$ACTIVE"
+
+    _j_hist=""
+    if [ -s "$HIST" ]; then
+        while read -r h_conn h_disc h_user h_ip4 h_ip6 h_client h_gw h_dev \
+            h_up h_dn h_ocin h_ocout h_pools; do
+            [ -n "$h_user" ] || continue
+            [ -n "$USER_FILTER" ] && [ "$h_user" != "$USER_FILTER" ] && continue
+            _j_dur=null
+            case "$h_conn$h_disc" in *[!0-9]*) ;; *) _j_dur=$((h_disc - h_conn)) ;; esac
+            _j_hist=",{\"user\":\"$(json_escape "$h_user")\",\"connected\":$(json_num "$h_conn"),\"disconnected\":$(json_num "$h_disc"),\"duration\":$_j_dur,\"assigned_ipv4\":\"$h_ip4\",\"assigned_ipv6\":$(json_str "$h_ip6"),\"client_ip\":$(json_str "$h_client"),\"client_geo\":$(json_str "$(geo_of "$h_client")"),\"device\":$(json_str "$h_dev"),\"gateway\":$(json_str "$h_gw"),\"up\":$(json_num "$h_up"),\"down\":$(json_num "$h_dn"),\"ocserv_up\":$(json_num "$h_ocin"),\"ocserv_down\":$(json_num "$h_ocout"),\"pools\":$(json_pools "$h_pools")}$_j_hist"
+            _j_su="$h_ocin"; [ "$_j_su" = "-" ] && _j_su="$h_up"
+            _j_sd="$h_ocout"; [ "$_j_sd" = "-" ] && _j_sd="$h_dn"
+            case "$_j_su" in -|'') _j_su=0 ;; esac
+            case "$_j_sd" in -|'') _j_sd=0 ;; esac
+            echo "$h_user $_j_su $_j_sd" >> "$SUMMARY"
+        done < "$HIST"
+    fi
+
+    _j_tot=""
+    if [ -s "$SUMMARY" ]; then
+        while read -r t_u t_n t_up t_dn; do
+            _j_tot="$_j_tot,{\"user\":\"$(json_escape "$t_u")\",\"sessions\":$t_n,\"up\":$t_up,\"down\":$t_dn}"
+        done <<EOF
+$(awk '{ n[$1]++; up[$1] += $2; dn[$1] += $3 }
+    END { for (u in n) print u, n[u], up[u], dn[u] }' "$SUMMARY" | sort)
+EOF
+    fi
+
+    _j_flap=""
+    while read -r f_u f_n; do
+        [ -n "$f_u" ] || continue
+        [ -n "$USER_FILTER" ] && [ "$f_u" != "$USER_FILTER" ] && continue
+        _j_flap="$_j_flap,{\"user\":\"$(json_escape "$f_u")\",\"short_sessions_last_hour\":$f_n}"
+    done <<EOF
+$(flap_lines)
+EOF
+
+    printf '{"accounting":%s,"collecting_since":%s,"history_file":"%s","active":[%s],"completed":[%s],"totals":[%s],"flapping":[%s]}\n' \
+        "$([ "$ACCT_ACTIVE" = 1 ] && echo true || echo false)" \
+        "$_j_since" "$(json_escape "$HIST")" \
+        "${_j_act#,}" "${_j_hist#,}" "${_j_tot#,}" "${_j_flap#,}"
+    exit 0
+fi
+
+# ---- Text mode -----------------------------------------------------------------
+
+hr
+echo "ocserv-server SESSION REPORT : $(date -Is 2>/dev/null || date)"
+if [ -f "$vpngw_state_dir/started" ]; then
+    _since="$(cat "$vpngw_state_dir/started")"
+    echo "Collecting since             : $(ts_fmt "$_since") (container start, $(dur_fmt $((NOW - _since))) ago)"
+fi
+[ -n "$session_history_file" ] \
+    && echo "History file                 : $HIST (persistent)"
+hr
+echo
+
+if [ "$ACCT_ACTIVE" = 0 ]; then
+    echo "Session accounting is inactive: it is collected by the per-user gateway"
+    echo "hook, so it needs gateway mode with a user map (VPN_USER_GATEWAY[_FILE])."
+    echo "For live-only info without it: occtl show users / network-diagnostic."
+    exit 0
+fi
+
+n_active="$(grep -c . "$ACTIVE" 2>/dev/null)" || n_active=0
+echo "### Active sessions ($n_active)"
+if [ "$n_active" = 0 ]; then
+    echo "(none)"
+else
+    while read -r a_conn _ a_user a_ip4 a_ip6 a_client a_gw a_dev a_up a_dn _ _ a_pools; do
+        [ -n "$a_user" ] || continue
         _dur="-"
-        case "$s_conn" in *[!0-9]*|'') ;; *) _dur="$(dur_fmt $((NOW - s_conn)))" ;; esac
+        case "$a_conn" in *[!0-9]*|'') ;; *) _dur="$(dur_fmt $((NOW - a_conn)))" ;; esac
+        _geo="$(geo_of "$a_client")"
         echo
-        printf '%s  (%s)\n' "$s_user" "online, connected $(ts_fmt "$s_conn"), up $_dur"
-        printf '    assigned %s%s  client %s  dev %s  gateway %s\n' \
-            "$s_ip4" "$([ "$s_ip6" != "-" ] && echo ", $s_ip6")" "$s_client" "$s_dev" "${s_gw}"
-        if [ -n "$s_up" ]; then
-            printf '    %-24s up %-10s down %s\n' "total (forwarded)" "$(hb "$s_up")" "$(hb "$s_dn")"
-            breakdown "$s_gw" "$s_up" "${s_dn:-0}" "$s_pools"
-            echo "$s_user ${s_up:-0} ${s_dn:-0}" >> "$SUMMARY"
+        printf '%s  (online, connected %s, up %s)\n' "$a_user" "$(ts_fmt "$a_conn")" "$_dur"
+        printf '    assigned %s%s  client %s%s  dev %s  gateway %s\n' \
+            "$a_ip4" "$([ "$a_ip6" != "-" ] && echo ", $a_ip6")" \
+            "$a_client" "${_geo:+ ($_geo)}" "$a_dev" "$a_gw"
+        if [ "$a_up" != "-" ]; then
+            _rate="$(session_rate "$a_ip4")"
+            _rate_s=""
+            [ -n "$_rate" ] \
+                && _rate_s="   [now: up $(hb "${_rate%% *}")/s down $(hb "${_rate##* }")/s]"
+            printf '    %-24s up %-10s down %s%s\n' "total (forwarded)" \
+                "$(hb "$a_up")" "$(hb "$a_dn")" "$_rate_s"
+            breakdown "$a_gw" "$a_up" "$a_dn" "$a_pools"
+            echo "$a_user $a_up $a_dn" >> "$SUMMARY"
         else
             echo "    (no counters - session predates the accounting upgrade?)"
-            echo "$s_user 0 0" >> "$SUMMARY"
+            echo "$a_user 0 0" >> "$SUMMARY"
         fi
-    done
+    done < "$ACTIVE"
 fi
 echo
 
-# ---- Completed sessions --------------------------------------------------------
-
 echo "### Completed sessions (newest first)"
-if [ ! -s "$vpngw_state_dir/history" ]; then
-    echo "(none since container start)"
+if [ ! -s "$HIST" ]; then
+    echo "(none recorded)"
 else
-    tac "$vpngw_state_dir/history" | while read -r h_conn h_disc h_user h_ip4 h_ip6 \
-        h_client h_gw h_dev h_up h_dn h_ocin h_ocout h_pools; do
+    tac "$HIST" | while read -r h_conn h_disc h_user h_ip4 h_ip6 h_client h_gw h_dev \
+        h_up h_dn h_ocin h_ocout h_pools; do
         [ -n "$h_user" ] || continue
         [ -n "$USER_FILTER" ] && [ "$h_user" != "$USER_FILTER" ] && continue
         _dur="-"
         case "$h_conn$h_disc" in *[!0-9]*) ;; *) _dur="$(dur_fmt $((h_disc - h_conn)))" ;; esac
+        _geo="$(geo_of "$h_client")"
         echo
         printf '%s  (connected %s, disconnected %s, duration %s)\n' \
             "$h_user" "$(ts_fmt "$h_conn")" "$(ts_fmt "$h_disc")" "$_dur"
-        printf '    assigned %s%s  client %s  dev %s  gateway %s\n' \
-            "$h_ip4" "$([ "$h_ip6" != "-" ] && echo ", $h_ip6")" "$h_client" "$h_dev" "$h_gw"
+        printf '    assigned %s%s  client %s%s  dev %s  gateway %s\n' \
+            "$h_ip4" "$([ "$h_ip6" != "-" ] && echo ", $h_ip6")" \
+            "$h_client" "${_geo:+ ($_geo)}" "$h_dev" "$h_gw"
         if [ "$h_ocin" != "-" ]; then
             printf '    %-24s up %-10s down %s\n' "total (ocserv)" "$(hb "$h_ocin")" "$(hb "$h_ocout")"
         fi
@@ -198,7 +376,6 @@ else
             printf '    %-24s up %-10s down %s\n' "total (forwarded)" "$(hb "$h_up")" "$(hb "$h_dn")"
         fi
         breakdown "$h_gw" "$h_up" "$h_dn" "$h_pools"
-        # Prefer ocserv's totals for the aggregate; fall back to the counters
         _su="$h_ocin"; _sd="$h_ocout"
         [ "$_su" = "-" ] && { _su="$h_up"; _sd="$h_dn"; }
         case "$_su" in -|'') _su=0; _sd=0 ;; esac
@@ -207,20 +384,26 @@ else
 fi
 echo
 
-# ---- Per-user totals ----------------------------------------------------------
-
 echo "### Per-user totals (active + completed)"
 if [ ! -s "$SUMMARY" ]; then
     echo "(nothing recorded yet)"
 else
-    {
-        printf '%-20s %-9s %-11s %s\n' "user" "sessions" "up" "down"
-        awk '{ n[$1]++; up[$1] += $2; dn[$1] += $3 }
-            END { for (u in n) print u, n[u], up[u], dn[u] }' "$SUMMARY" \
-        | sort | while read -r t_u t_n t_up t_dn; do
-            printf '%-20s %-9s %-11s %s\n' "$t_u" "$t_n" "$(hb "$t_up")" "$(hb "$t_dn")"
-        done
-    }
+    printf '%-20s %-9s %-11s %s\n' "user" "sessions" "up" "down"
+    awk '{ n[$1]++; up[$1] += $2; dn[$1] += $3 }
+        END { for (u in n) print u, n[u], up[u], dn[u] }' "$SUMMARY" \
+    | sort | while read -r t_u t_n t_up t_dn; do
+        printf '%-20s %-9s %-11s %s\n' "$t_u" "$t_n" "$(hb "$t_up")" "$(hb "$t_dn")"
+    done
+fi
+
+_flaps="$(flap_lines)"
+if [ -n "$_flaps" ]; then
+    echo
+    echo "### Reconnect loops"
+    printf '%s\n' "$_flaps" | while read -r f_u f_n; do
+        [ -n "$USER_FILTER" ] && [ "$f_u" != "$USER_FILTER" ] && continue
+        echo "[flap] $f_u: $f_n sessions shorter than $((FLAP_SHORT / 60))m in the last hour - client may be reconnect-looping"
+    done
 fi
 echo
 hr

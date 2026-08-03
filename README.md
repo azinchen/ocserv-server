@@ -153,6 +153,12 @@ Grouped by feature; every variable is one line here — the **[Configuration Ref
 | `VPN_BYPASS_RULE_PRIO` | `800` | Priority of the bypass policy rules (advanced). |
 | `VPN_BYPASS_MARK` | `0xbc` | Base fwmark for bypassed traffic (advanced). |
 
+### Session accounting — [details][wiki-sessions]
+
+| Variable | Default | Description |
+|---|---|---|
+| `SESSION_HISTORY_FILE` | _(unset)_ | Persist completed-session history on a volume (default: tmpfs, container lifetime). |
+
 ### Health monitor — [details][wiki-health]
 
 | Variable | Default | Description |

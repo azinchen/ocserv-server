@@ -52,6 +52,7 @@ cert_watch_interval="${CERT_WATCH_INTERVAL:-0}"
 health_check_enabled="${HEALTH_CHECK_ENABLED:-false}"
 health_check_egress="${HEALTH_CHECK_EGRESS:-}"
 health_check_url="${HEALTH_CHECK_URL:-https://1.1.1.1/cdn-cgi/trace}"
+session_history_file="${SESSION_HISTORY_FILE:-}"
 ocserv_config="${OCSERV_CONFIG:-/etc/ocserv/ocserv.conf}"
 
 # Normalise the subnet-default gateway values (unmapped users). Each family
@@ -551,26 +552,41 @@ acct_apply_session() {
     _ac_t="$(acct_table)"
     acct_ensure_base "$_ac_t" || return 1
     _ac_s="$(acct_sid "$_ac_ip4")"
+    # A destination can sit in several of the session's pools; routing gives
+    # it to the FIRST matching pool (marking-rule order = bypass_pools file
+    # order). The counters must mirror that or overlapping pools would be
+    # double-counted and over-subtracted from the gateway share: totals are
+    # counted first, then one block per pool in the same order, each ending
+    # the walk with return on match.
+    if [ $# -gt 0 ] && [ -f "$vpngw_state_dir/bypass_pools" ]; then
+        _ac_ordered=""
+        while read -r _ac_bp; do
+            for _ac_p in "$@"; do
+                [ "$_ac_p" = "$_ac_bp" ] && _ac_ordered="$_ac_ordered $_ac_p"
+            done
+        done < "$vpngw_state_dir/bypass_pools"
+        # shellcheck disable=SC2086
+        set -- $_ac_ordered
+    fi
     _ac_counters=""
-    _ac_rules=""
+    _ac_rules="
+        ip saddr $_ac_ip4 counter name a_${_ac_s}_up
+        ip daddr $_ac_ip4 counter name a_${_ac_s}_dn"
+    [ -n "$_ac_ip6" ] && _ac_rules="$_ac_rules
+        ip6 saddr $_ac_ip6 counter name a_${_ac_s}_up
+        ip6 daddr $_ac_ip6 counter name a_${_ac_s}_dn"
     for _ac_p in "$@"; do
         _ac_pi="$(acct_pool_id "$_ac_p")"
         _ac_counters="$_ac_counters
     counter a_${_ac_s}_${_ac_pi}_up { packets 0 bytes 0 }
     counter a_${_ac_s}_${_ac_pi}_dn { packets 0 bytes 0 }"
         _ac_rules="$_ac_rules
-        ip saddr $_ac_ip4 ip daddr @pool_${_ac_p}_v4 counter name a_${_ac_s}_${_ac_pi}_up
-        ip saddr @pool_${_ac_p}_v4 ip daddr $_ac_ip4 counter name a_${_ac_s}_${_ac_pi}_dn"
+        ip saddr $_ac_ip4 ip daddr @pool_${_ac_p}_v4 counter name a_${_ac_s}_${_ac_pi}_up return
+        ip saddr @pool_${_ac_p}_v4 ip daddr $_ac_ip4 counter name a_${_ac_s}_${_ac_pi}_dn return"
         [ -n "$_ac_ip6" ] && _ac_rules="$_ac_rules
-        ip6 saddr $_ac_ip6 ip6 daddr @pool_${_ac_p}_v6 counter name a_${_ac_s}_${_ac_pi}_up
-        ip6 saddr @pool_${_ac_p}_v6 ip6 daddr $_ac_ip6 counter name a_${_ac_s}_${_ac_pi}_dn"
+        ip6 saddr $_ac_ip6 ip6 daddr @pool_${_ac_p}_v6 counter name a_${_ac_s}_${_ac_pi}_up return
+        ip6 saddr @pool_${_ac_p}_v6 ip6 daddr $_ac_ip6 counter name a_${_ac_s}_${_ac_pi}_dn return"
     done
-    _ac_rules="$_ac_rules
-        ip saddr $_ac_ip4 counter name a_${_ac_s}_up
-        ip daddr $_ac_ip4 counter name a_${_ac_s}_dn"
-    [ -n "$_ac_ip6" ] && _ac_rules="$_ac_rules
-        ip6 saddr $_ac_ip6 counter name a_${_ac_s}_up
-        ip6 daddr $_ac_ip6 counter name a_${_ac_s}_dn"
     nft -f - <<EOF || return 1
 table inet $_ac_t {$_ac_counters
     counter a_${_ac_s}_up { packets 0 bytes 0 }
@@ -616,6 +632,13 @@ acct_cleanup_session() {
 acct_counter_bytes() { # $1 = table, $2 = counter name -> bytes (empty if absent)
     nft list counter inet "$1" "$2" 2>/dev/null \
         | sed -n 's/.*packets [0-9]* bytes \([0-9]*\).*/\1/p' | head -1
+}
+
+# Completed sessions land here, one line per session. SESSION_HISTORY_FILE
+# (e.g. a path on the config volume) makes the history persist across
+# container recreations; the default is tmpfs, i.e. container lifetime.
+acct_history_file() {
+    echo "${session_history_file:-$vpngw_state_dir/history}"
 }
 
 # Remove every policy rule and kill-switch entry for a session's addresses.
