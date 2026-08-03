@@ -19,9 +19,15 @@ This page only shows what is **added on top of** the [Per-User Gateways](Example
 
 ## Files
 
+Everything you edit day-to-day lives in files on the volume, next to the gateway and user maps from the previous example:
+
 ```
 volumes/config/
 ├── ...                          # everything from Per-User Gateways, unchanged
+├── vpngw/
+│   ├── gateways                 # unchanged (previous example)
+│   ├── user-gateway.conf        # unchanged (previous example)
+│   └── user-bypass.conf         # user -> pools map (below), hot-reloadable
 └── pools/
     ├── sources.conf             # where to download pool lists (below)
     ├── ads.list                 # hand-maintained blocklist (below)
@@ -30,13 +36,16 @@ volumes/config/
 
 ## ocserv service — added environment
 
+Only startup-fixed settings go in compose; the maps and lists stay in the files above. (`VPN_BYPASS_TARGETS` is compose-only on purpose: the set of pools and their targets is fixed at container start — a file would suggest a hot-reloadability it cannot have. *Which users use which pools* is the part that changes, and that is a file.)
+
 ```yaml
   ocserv:
     # ... exactly as in Per-User Gateways, plus:
     environment:
-      # pools attach per gateway: every nl/us user inherits all three
-      - VPN_GATEWAYS_BYPASS=nl=ru+streaming+ads,us=ru+ads
-      # where each pool's traffic goes (default is "direct")
+      # user -> pools map lives in a file, applied live on save
+      - VPN_USER_BYPASS_FILE=/etc/ocserv/vpngw/user-bypass.conf
+      - VPN_USER_BYPASS_WATCH=1
+      # where each pool's traffic goes (default is "direct") - startup-fixed
       - VPN_BYPASS_TARGETS=streaming=us,ads=block
       # auto-download the ru list daily; ads/streaming stay hand-maintained
       - VPN_BYPASS_SOURCES_FILE=/etc/ocserv/pools/sources.conf
@@ -45,7 +54,18 @@ volumes/config/
       - VPN_BYPASS_WATCH=1
 ```
 
-Per-user attachments are possible too (`VPN_USER_BYPASS=alice=ru,guest=none`) — see [Destination Bypass#attaching-pools](Destination-Bypass#attaching-pools) for the precedence rules.
+## volumes/config/vpngw/user-bypass.conf
+
+Pools per user, `+`-joined; `none` opts a user out entirely. Edit and save — connected sessions are reconciled in place, nobody reconnects:
+
+```
+# user     pools
+alice      ru+streaming+ads
+bob        ru+ads
+guest      none
+```
+
+Pools can also be inherited from the user's gateway instead of listed per user (`VPN_GATEWAYS_BYPASS=nl=ru+ads,...` in compose) — see [Destination Bypass#attaching-pools](Destination-Bypass#attaching-pools) for the precedence rules.
 
 ## volumes/config/pools/sources.conf
 
@@ -75,6 +95,7 @@ docker compose up -d          # first boot downloads ru.list before clients conn
 
 docker compose exec ocserv bypass-fetch          # force a re-download any time
 # edit ads.list and save - VPN_BYPASS_WATCH=1 reloads it live, sessions untouched
+# edit user-bypass.conf and save - VPN_USER_BYPASS_WATCH=1 re-maps live sessions in place
 ```
 
 ## Verify
@@ -94,10 +115,15 @@ docker compose exec ocserv session-report
 `session-report`'s per-user totals answer the question this setup exists for — how much traffic stayed direct vs went through the cascade:
 
 ```
+### Per-user totals (active + completed)
+user                 sessions  up          down
 alice                3         241.3M      2.1G
     via gateway nl           up 180.1M     down 1.6G
     direct                   up 61.0M      down 490.2M
     blocked (rejected)       up 210.4K     down 0B
+bob                  1         88.0M       910.5M
+    via gateway us           up 80.2M      down 850.1M
+    direct                   up 7.8M       down 60.4M
 ```
 
 ---
