@@ -96,6 +96,9 @@ RUN echo "**** install security fix packages ****" && \
 ############################
 FROM alpine:${ALPINE_VERSION} AS rootfs
 
+ARG IMAGE_VERSION=N/A \
+    BUILD_DATE=N/A
+
 RUN mkdir -p /rootfs
 
 ADD rootfs/ /rootfs/
@@ -107,6 +110,25 @@ RUN chmod +x /rootfs/usr/local/bin/* || true && \
 
 COPY --from=s6-fetch     /s6root/ /rootfs/
 COPY --from=ocserv-build /pkg/    /rootfs/
+
+# Stamp the image identity into backend-functions (every script sources it).
+# LAST step of the stage on purpose: the ARG values change per build, so only
+# this layer (and the final COPY --from=rootfs) miss the cache.
+RUN safe_sed() { \
+        pattern="$1"; \
+        replacement="$2"; \
+        file="$3"; \
+        for delim in '/' '|' '#' '@' '%' '^' '&' '*' '+' '-' '_' '=' ':' ';' '<' '>' ',' '.' '?' '~'; do \
+            if [ "${replacement%%*"$delim"*}" = "$replacement" ]; then \
+                sed -i "s${delim}${pattern}${delim}${replacement}${delim}g" "$file"; \
+                return; \
+            fi; \
+        done; \
+        echo "No safe delimiter found for $pattern in $file" >&2; \
+        return 1; \
+    } && \
+    safe_sed "__IMAGE_VERSION__" "${IMAGE_VERSION}" /rootfs/usr/local/bin/backend-functions && \
+    safe_sed "__BUILD_DATE__" "${BUILD_DATE}" /rootfs/usr/local/bin/backend-functions
 
 ############################
 # 4) Final runtime (minimal layers)
