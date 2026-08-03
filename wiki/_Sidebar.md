@@ -17,6 +17,7 @@
 - [[Networking NAT and Routing]]
 - [[Gateway Mode]]
 - [[Destination Bypass]]
+- [[Session Accounting]]
 - [[Health Monitor]]
 - [[Clients and Devices]]
 

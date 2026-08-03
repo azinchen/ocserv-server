@@ -18,6 +18,7 @@ It runs unmodified ocserv, so every client and protocol ocserv supports works he
 - **Per-user routing** — map each user to a different upstream gateway; hot-reloadable, no static IPs needed
 - **Destination bypass** — route by destination: country pools direct, chosen services via a specific exit, ad/malware pools blocked; lists auto-fetched and hot-reloaded
 - **Certificate hot-reload** — a renewed Let's Encrypt cert is picked up without a restart or dropped sessions
+- **Session accounting** — `session-report` shows every session's connect/disconnect times and its traffic split per gateway and bypass pool
 - **Opt-in health monitor** — Docker-native `HEALTHCHECK`: server liveness, routing integrity, and (optionally) real egress probes per gateway
 - **Reverse-proxy friendly** — designed to share Let's Encrypt certificates with [SWAG](https://github.com/linuxserver/docker-swag)
 - **Multi-arch images** published to GHCR (and Docker Hub for releases)
@@ -37,6 +38,7 @@ It runs unmodified ocserv, so every client and protocol ocserv supports works he
 | Understand NAT, routing, full vs split tunnel | **[[Networking NAT and Routing]]** |
 | Route clients out through another VPN (e.g. NordVPN) | **[[Gateway Mode]]** |
 | Route by destination — bypass pools, per-service exits, blocklists | **[[Destination Bypass]]** |
+| See who connected and how much data went through which path | **[[Session Accounting]]** |
 | Report container health to Docker / monitoring | **[[Health Monitor]]** |
 | Connect a client or router | **[[Clients and Devices]]** |
 | See how the image is built internally | **[[Architecture and Internals]]** |

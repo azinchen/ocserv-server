@@ -182,6 +182,7 @@ docker exec <container> nft list table inet ocserv_bypass    # pools + subscribe
 docker exec <container> ip rule                              # the fwmark rules at prio 800
 docker exec <container> cat /run/ocserv-vpngw/bypass_targets # pool -> target -> mark
 docker exec <container> cat /run/ocserv-vpngw/bypass_users   # effective per-user map
+docker exec <container> session-report                       # per-session bytes through each pool vs the gateway
 ```
 
 ---

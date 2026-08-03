@@ -489,6 +489,135 @@ bypass_apply_session() {
     return 0
 }
 
+# ---- Per-session traffic accounting ------------------------------------------
+# Named nft counters per session (totals + one pair per attached bypass pool),
+# read live by session-report and snapshotted into the history file by the
+# disconnect hook. The counters count FORWARDED tunnel traffic: "up" is
+# client -> world, "down" is world -> client; traffic terminating in the
+# container (tunneled DNS, probes) and traffic later dropped by the kill
+# switch is not split per path - ocserv's own totals cover the difference.
+#
+# Everything lives in ONE table: alongside the pool sets in inet ocserv_bypass
+# when destination bypass is configured (per-pool rules reference @pool_* sets,
+# and nft cannot reference sets across tables), else in inet ocserv_gw. Both
+# are safe at runtime: only init-vpngw recreates them; the gw-resolver flushes
+# just the forward chain. A dispatch chain sends each direction through the
+# session's own counter chain via verdict maps, so connect/disconnect never
+# has to delete rules by handle - elements and chains are keyed by address.
+#
+# Accounting is best-effort by design: a session that cannot be counted must
+# still connect, so callers ignore these return values.
+
+acct_table() {
+    if [ -f "$vpngw_state_dir/bypass_pools" ]; then
+        echo ocserv_bypass
+    else
+        echo ocserv_gw
+    fi
+}
+
+acct_sid() { echo "$1" | tr '.' '_'; }
+# Pool names may contain '-', nft object names may not: sanitize. (Two pools
+# differing only in '-' vs '_' would collide; init-vpngw's name rules make
+# that a non-issue in practice.)
+acct_pool_id() { echo "$1" | tr '-' '_'; }
+
+acct_ensure_base() { # $1 = table
+    nft list chain inet "$1" acct >/dev/null 2>&1 && return 0
+    nft -f - <<EOF
+table inet $1 {
+    map acct_src4 { type ipv4_addr : verdict; }
+    map acct_dst4 { type ipv4_addr : verdict; }
+    map acct_src6 { type ipv6_addr : verdict; }
+    map acct_dst6 { type ipv6_addr : verdict; }
+    chain acct {
+        type filter hook forward priority filter - 30; policy accept;
+        ip saddr vmap @acct_src4
+        ip daddr vmap @acct_dst4
+        ip6 saddr vmap @acct_src6
+        ip6 daddr vmap @acct_dst6
+    }
+}
+EOF
+}
+
+# Install a session's counters and dispatch entries.
+#   $1 = IPv4   $2 = IPv6 (may be empty)   $3... = bypass pool names
+acct_apply_session() {
+    _ac_ip4="$1"
+    _ac_ip6="$2"
+    shift 2
+    [ -n "$_ac_ip4" ] || return 0
+    _ac_t="$(acct_table)"
+    acct_ensure_base "$_ac_t" || return 1
+    _ac_s="$(acct_sid "$_ac_ip4")"
+    _ac_counters=""
+    _ac_rules=""
+    for _ac_p in "$@"; do
+        _ac_pi="$(acct_pool_id "$_ac_p")"
+        _ac_counters="$_ac_counters
+    counter a_${_ac_s}_${_ac_pi}_up { packets 0 bytes 0 }
+    counter a_${_ac_s}_${_ac_pi}_dn { packets 0 bytes 0 }"
+        _ac_rules="$_ac_rules
+        ip saddr $_ac_ip4 ip daddr @pool_${_ac_p}_v4 counter name a_${_ac_s}_${_ac_pi}_up
+        ip saddr @pool_${_ac_p}_v4 ip daddr $_ac_ip4 counter name a_${_ac_s}_${_ac_pi}_dn"
+        [ -n "$_ac_ip6" ] && _ac_rules="$_ac_rules
+        ip6 saddr $_ac_ip6 ip6 daddr @pool_${_ac_p}_v6 counter name a_${_ac_s}_${_ac_pi}_up
+        ip6 saddr @pool_${_ac_p}_v6 ip6 daddr $_ac_ip6 counter name a_${_ac_s}_${_ac_pi}_dn"
+    done
+    _ac_rules="$_ac_rules
+        ip saddr $_ac_ip4 counter name a_${_ac_s}_up
+        ip daddr $_ac_ip4 counter name a_${_ac_s}_dn"
+    [ -n "$_ac_ip6" ] && _ac_rules="$_ac_rules
+        ip6 saddr $_ac_ip6 counter name a_${_ac_s}_up
+        ip6 daddr $_ac_ip6 counter name a_${_ac_s}_dn"
+    nft -f - <<EOF || return 1
+table inet $_ac_t {$_ac_counters
+    counter a_${_ac_s}_up { packets 0 bytes 0 }
+    counter a_${_ac_s}_dn { packets 0 bytes 0 }
+    chain acct_${_ac_s} {$_ac_rules
+    }
+}
+EOF
+    nft add element inet "$_ac_t" acct_src4 "{ $_ac_ip4 : jump acct_${_ac_s} }" || return 1
+    nft add element inet "$_ac_t" acct_dst4 "{ $_ac_ip4 : jump acct_${_ac_s} }" || return 1
+    if [ -n "$_ac_ip6" ]; then
+        nft add element inet "$_ac_t" acct_src6 "{ $_ac_ip6 : jump acct_${_ac_s} }" 2>/dev/null || true
+        nft add element inet "$_ac_t" acct_dst6 "{ $_ac_ip6 : jump acct_${_ac_s} }" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# Remove a session's dispatch entries, chain and counters. Idempotent.
+#   $1 = IPv4 (may be empty)   $2 = IPv6 (may be empty)
+acct_cleanup_session() {
+    _ac_ip4="${1:-}"
+    _ac_ip6="${2:-}"
+    [ -n "$_ac_ip4" ] || return 0
+    _ac_t="$(acct_table)"
+    _ac_s="$(acct_sid "$_ac_ip4")"
+    nft delete element inet "$_ac_t" acct_src4 "{ $_ac_ip4 }" 2>/dev/null || true
+    nft delete element inet "$_ac_t" acct_dst4 "{ $_ac_ip4 }" 2>/dev/null || true
+    if [ -n "$_ac_ip6" ]; then
+        nft delete element inet "$_ac_t" acct_src6 "{ $_ac_ip6 }" 2>/dev/null || true
+        nft delete element inet "$_ac_t" acct_dst6 "{ $_ac_ip6 }" 2>/dev/null || true
+    fi
+    nft flush chain inet "$_ac_t" "acct_${_ac_s}" 2>/dev/null || true
+    nft delete chain inet "$_ac_t" "acct_${_ac_s}" 2>/dev/null || true
+    # Counter names embed the pool list at connect time, which may since have
+    # changed - enumerate instead of guessing.
+    for _ac_c in $(nft list counters table inet "$_ac_t" 2>/dev/null \
+        | sed -n "s/^[[:space:]]*counter \(a_${_ac_s}_[A-Za-z0-9_]*\) {.*/\1/p"); do
+        nft delete counter inet "$_ac_t" "$_ac_c" 2>/dev/null || true
+    done
+    return 0
+}
+
+acct_counter_bytes() { # $1 = table, $2 = counter name -> bytes (empty if absent)
+    nft list counter inet "$1" "$2" 2>/dev/null \
+        | sed -n 's/.*packets [0-9]* bytes \([0-9]*\).*/\1/p' | head -1
+}
+
 # Remove every policy rule and kill-switch entry for a session's addresses.
 # Idempotent; used on disconnect, before (re)applying a session, and by reload.
 #   $1 = IPv4 (may be empty)   $2 = IPv6 (may be empty)

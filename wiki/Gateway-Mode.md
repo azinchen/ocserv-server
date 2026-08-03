@@ -277,6 +277,8 @@ The quickest check is the built-in diagnostic — it probes egress **through eve
 docker exec ocserv-server network-diagnostic
 ```
 
+For per-session traffic — who connected when, and how many bytes took the gateway versus a bypass pool — see **[[Session Accounting]]** (`docker exec ocserv-server session-report`).
+
 Or inspect the pieces by hand:
 
 ```bash

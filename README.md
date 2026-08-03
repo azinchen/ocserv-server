@@ -28,6 +28,7 @@ OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a small self
 - **🛡️ Fail-closed kill switch** — nftables next-hop guards on every routed path: if an upstream is down, clients lose internet rather than leak ([details][wiki-killswitch])
 - **🔄 Hot-reload everything** — user maps, pool lists, DNS-named gateway addresses and TLS certificates all reload live, without dropping sessions ([details][wiki-reload])
 - **🔒 Reverse-proxy & Let's Encrypt friendly** — share SWAG's certificates; renewals are picked up without a restart ([details][wiki-certs])
+- **📊 Session accounting** — `session-report` shows every session's connect/disconnect times and its traffic split per gateway and bypass pool ([details][wiki-sessions])
 - **🩺 Opt-in health monitor** — Docker-native `HEALTHCHECK`: server liveness, routing integrity, and (optionally) real egress probes per gateway ([details][wiki-health])
 - **📵 IPv6 without leaks** — optional NAT66; when an upstream has no IPv6, client IPv6 is rejected fail-closed instead of escaping ([details][wiki-ipv6])
 - **📦 Multi-arch, from source** — amd64 / arm64 / riscv64 images, ocserv built from source, supervised by s6-overlay
@@ -229,6 +230,7 @@ MIT — see [LICENSE](LICENSE).
 [wiki-ipv6]: https://github.com/azinchen/ocserv-server/wiki/Networking-NAT-and-Routing#ipv6
 [wiki-certs]: https://github.com/azinchen/ocserv-server/wiki/Reverse-Proxy-and-Certificates
 [wiki-health]: https://github.com/azinchen/ocserv-server/wiki/Health-Monitor
+[wiki-sessions]: https://github.com/azinchen/ocserv-server/wiki/Session-Accounting
 [wiki-clients]: https://github.com/azinchen/ocserv-server/wiki/Clients-and-Devices
 [wiki-troubleshoot]: https://github.com/azinchen/ocserv-server/wiki/Troubleshooting
 [wiki-faq]: https://github.com/azinchen/ocserv-server/wiki/FAQ
