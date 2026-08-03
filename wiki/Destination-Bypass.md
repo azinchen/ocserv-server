@@ -21,6 +21,8 @@ Typical uses:
 
 Destination bypass is part of gateway mode — it needs at least one gateway configured (with no gateway, clients already exit direct and there is nothing to bypass).
 
+> **Want a ready-to-run setup instead of reference?** Copy the complete example: **[Bypass and Blocklists](Example-Destination-Bypass)** — country pool direct, streaming via a second exit, ads blocked, lists auto-fetched. This page explains the model and every knob.
+
 ## The model in one minute
 
 1. **Define pools** — a pool is a file of CIDRs, `<name>.list`, in `VPN_BYPASS_POOLS_DIR`.

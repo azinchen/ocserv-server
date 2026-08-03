@@ -30,6 +30,7 @@ It runs unmodified ocserv, so every client and protocol ocserv supports works he
 | If you want to… | Go to |
 |---|---|
 | Get a server running in 5 minutes | **[[Getting Started]]** |
+| Copy a complete, working setup | **Examples:** [Basic](ocserv-Configuration-Basic) · [Self-Signed](ocserv-Configuration-Self-Signed) · [SWAG](ocserv-Configuration-SWAG-Integration) · [One Upstream](Example-Gateway-Single-Upstream) · [Per-User Gateways](Example-Gateway-Per-User) · [Bypass](Example-Destination-Bypass) |
 | Understand every env var, volume, and port | **[[Configuration Reference]]** |
 | Tune the `ocserv.conf` itself | **[[ocserv Configuration]]** |
 | Add / remove VPN users | **[[User Management]]** |
