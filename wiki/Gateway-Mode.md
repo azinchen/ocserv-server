@@ -227,6 +227,8 @@ It has its own page: **[[Destination Bypass]]**.
 
 Whatever the upstream container is, it must **forward the Docker subnet out its tunnel** — ocserv SNATs clients to its own Docker-network address before handing packets over, so the upstream sees Docker-subnet sources and needs no route back to the client subnet. With the companion [NordVPN image](https://github.com/azinchen/nordvpn) that's one variable: `FORWARD_FROM=<docker network subnet>` (the Docker network, **not** the client subnet).
 
+The upstream doesn't have to be a commercial VPN: an [**openconnect-client**](https://github.com/azinchen/openconnect-client) sidecar connecting to a *remote* ocserv node works the same way (its gateway mode forwards the Docker subnet) — that's how **server-to-server cascades** are built, with each remote node appearing here as a named gateway.
+
 Complete compose files: **[One Upstream for All](Example-Gateway-Single-Upstream)** · **[Per-User Gateways](Example-Gateway-Per-User)**.
 
 ## Verify
