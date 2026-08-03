@@ -24,6 +24,9 @@ Yes — that's [[Gateway Mode]]: point `VPN_GATEWAY` at an upstream VPN containe
 **Can some destinations skip the upstream — or use a different one, or be blocked?**
 Yes — [[Destination Bypass]]: named CIDR pools (e.g. a country list) whose matched traffic goes direct, out a chosen gateway, or is rejected, per pool. Lists can be auto-fetched and hot-reloaded.
 
+**Is there a client for Docker — to route other containers or a LAN through this server?**
+Yes — the companion [azinchen/openconnect-client](https://github.com/azinchen/openconnect-client) image: containers join it with `network_mode: service:vpn`, LAN hosts can use it as a gateway, and it ships its own fail-closed kill switch. It also plugs into another ocserv node's [[Gateway Mode]] for server-to-server cascades. See [Clients and Devices#docker-openconnect-client-companion-image](Clients-and-Devices#docker-openconnect-client-companion-image).
+
 **Can SWAG reverse-proxy the VPN?**
 No — the VPN protocol isn't a proxyable HTTP stream. SWAG only provides the TLS certificate; ocserv is exposed directly on its own port. See [[Reverse Proxy and Certificates]].
 

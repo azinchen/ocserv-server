@@ -112,6 +112,33 @@ GL.iNet-specific caveats:
 - The GL dashboard's VPN status, kill switch and "VPN policies" only apply to tunnels created in the GL UI — they **don't see** this connection. Manage it from LuCI, and don't rely on the GL kill switch for it.
 - A **firmware upgrade removes manually-installed packages** (your `/etc/config/network` settings survive with "keep settings"); rerun the `opkg install` afterwards.
 
+## Docker: openconnect-client (companion image)
+
+[**azinchen/openconnect-client**](https://github.com/azinchen/openconnect-client) is this server's companion client image — the same configuration style, built and documented alongside. Use it when the "client" is not a person's device but infrastructure:
+
+- **Route other containers** through the tunnel: they join with `network_mode: service:vpn` and transparently use it.
+- **Gateway for LAN hosts** (macvlan/routed setups) with daemon-free DNS interception.
+- **Server-to-server cascades**: an openconnect-client sidecar connects to a *remote* ocserv node and becomes a named gateway in the local node's [[Gateway Mode]] — that's how a multi-hop chain of ocserv servers is built.
+
+It speaks to this server natively — camouflage secret in the URL (redacted in logs), TCP-only friendly, `;`-separated server list for failover — and ships its own fail-closed dual-stack kill switch, installed before the client starts:
+
+```yaml
+services:
+  vpn:
+    image: azinchen/openconnect-client:latest
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun]
+    environment:
+      - URL=https://vpn.example.com:443/?your-secret
+      - USER=alice
+      - PASS=S3cret
+  app:
+    image: nginx:alpine
+    network_mode: service:vpn      # all of app's traffic uses the tunnel
+```
+
+Full documentation: the [openconnect-client wiki](https://github.com/azinchen/openconnect-client/wiki).
+
 ## Confirming a client really works
 
 Authenticating is not the same as carrying traffic. After connecting:

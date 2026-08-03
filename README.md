@@ -15,6 +15,8 @@
 OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a small self-configuring Docker container: it builds ocserv from source on Alpine, sets up NAT/forwarding automatically with nftables, and can disguise itself as an ordinary HTTPS website.
 
 > **Chaining through a commercial VPN?** The companion images [**azinchen/nordvpn**](https://github.com/azinchen/nordvpn) (OpenVPN) and [**azinchen/nordvpn-wg**](https://github.com/azinchen/nordvpn-wg) (WireGuard) plug straight into this server's gateway mode — your clients connect to your OpenConnect server and exit with NordVPN's IP.
+>
+> **Need the client side in Docker too?** [**azinchen/openconnect-client**](https://github.com/azinchen/openconnect-client) is the companion client: it connects to this server (camouflage supported, fail-closed kill switch included) and routes other containers (`network_mode: service:vpn`) or whole LAN hosts through the tunnel — including server-to-server cascades, where it feeds another ocserv node's gateway mode.
 
 ## ✨ Key Features
 
@@ -89,6 +91,7 @@ You provide an `ocserv.conf` and a certificate in the config volume — ready-to
 | Give each user a different exit country | [Per-user gateways][wiki-peruser] |
 | Route by destination (country direct, streaming via US, ads blocked) | [Destination Bypass][wiki-bypass] |
 | Connect phones, laptops, routers | [Clients and Devices][wiki-clients] |
+| Route other containers or LAN hosts through this server | [openconnect-client](https://github.com/azinchen/openconnect-client) (companion image) |
 
 For example, chaining every client out through a NordVPN container is just:
 
