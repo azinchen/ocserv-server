@@ -1,6 +1,16 @@
 #!/bin/sh
 # shellcheck shell=sh
 
+# Substituted at image build time (safe_sed in the Dockerfile's rootfs stage):
+# CI passes the image tag ('dev' for main, the version for releases) and a UTC
+# build timestamp; a local docker build without build-args yields N/A. A value
+# still carrying the "__" prefix means an unsubstituted dev copy (script
+# bind-mounted from the repo) - fall back to N/A instead of the placeholder.
+image_version="__IMAGE_VERSION__"
+image_build_date="__BUILD_DATE__"
+case "$image_version" in __*) image_version="N/A" ;; esac
+case "$image_build_date" in __*) image_build_date="N/A" ;; esac
+
 setcap_net_bind="${SETCAP_NET_BIND:-1}"
 setcap_net_admin="${SETCAP_NET_ADMIN:-1}"
 vpn_subnet="${VPN_SUBNET:-10.10.10.0/24}"

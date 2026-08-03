@@ -5,6 +5,8 @@ set -eu
 
 . /usr/local/bin/backend-functions
 
+log "[INIT-CONFIG] ocserv-server image $image_version, built $image_build_date"
+
 log "[INIT-CONFIG] Ensuring ocserv configuration file exists"
 
 # Create default config if missing

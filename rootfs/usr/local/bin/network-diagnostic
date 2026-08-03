@@ -615,7 +615,8 @@ if [ "$MODE" = "json" ]; then
     _run=false;  [ -n "$OCSERV_PID" ] && _run=true
     [ -n "$OCSERV_PID" ] || note_warn "ocserv is not running"
 
-    printf '{"server":{"running":%s,"pid":%s,"version":"%s","clients":%s},"config":{"vpn_subnet":"%s","subnet_match":%s,"camouflage":%s},"direct":{"egress4":%s,"egress6":%s},"gateways":[%s],"clients":[%s],"bypass_pools":[%s],"certificates":[%s],"tables":{"nat":%s,"killswitch":%s,"bypass":%s},"warnings":%s}\n' \
+    printf '{"image":{"version":"%s","built":"%s"},"server":{"running":%s,"pid":%s,"version":"%s","clients":%s},"config":{"vpn_subnet":"%s","subnet_match":%s,"camouflage":%s},"direct":{"egress4":%s,"egress6":%s},"gateways":[%s],"clients":[%s],"bypass_pools":[%s],"certificates":[%s],"tables":{"nat":%s,"killswitch":%s,"bypass":%s},"warnings":%s}\n' \
+        "$(json_escape "$image_version")" "$(json_escape "$image_build_date")" \
         "$_run" "${OCSERV_PID:-null}" "$(json_escape "$(ocserv --version 2>&1 | head -1)")" "$CONNECTED" \
         "$vpn_subnet" "$_match" "$([ "$(conf_get camouflage)" = "true" ] && echo true || echo false)" \
         "$_d4" "$_d6" "${_j_gws#,}" "${_j_cl#,}" "${_j_pools#,}" "${_j_certs#,}" \
@@ -628,6 +629,7 @@ fi
 
 hr
 echo "ocserv-server DIAG (full) : $(date -Is 2>/dev/null || date)"
+echo "Image                     : $image_version (built $image_build_date)"
 echo "Kernel                    : $(uname -r)"
 echo "ocserv version            : $(ocserv --version 2>&1 | head -1)"
 echo "Server status             : $SERVER_STATE"
