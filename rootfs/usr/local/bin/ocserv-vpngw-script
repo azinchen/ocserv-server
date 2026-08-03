@@ -93,6 +93,18 @@ case "$reason" in
                 printf '%s %s %s %s %s\n' \
                     "$username" "${gwname:--}" "$ip4" "${ip6:--}" "${bp_rec:--}" > "$sess_file"
             fi
+            # Traffic accounting (session-report): per-session counters plus
+            # a connect record. Best-effort - a session that cannot be
+            # counted still connects.
+            if [ -n "$ip4" ]; then
+                acct_cleanup_session "$ip4" "$ip6"
+                # shellcheck disable=SC2086
+                acct_apply_session "$ip4" "$ip6" $bypass_pools \
+                    || log_error "[VPNGW-HOOK] Warning: no traffic counters for $ip4 (session-report will show '-')"
+                mkdir -p "$vpngw_state_dir/acct"
+                printf '%s %s %s\n' "$(date +%s)" "${IP_REAL:--}" "${DEVICE:--}" \
+                    > "$vpngw_state_dir/acct/$ip4"
+            fi
         ) 9>"$lock"; then
             log_error "[VPNGW-HOOK] Failed to route user '$username' (ip $ip4); rejecting session"
             exit 1
@@ -103,7 +115,40 @@ case "$reason" in
     disconnect)
         (
             flock 9
+            # Snapshot the session's counters into the history file BEFORE
+            # tearing anything down. ocserv hands us its own totals in the
+            # environment (STATS_BYTES_IN = from the client, STATS_BYTES_OUT
+            # = to the client); the nft counters add the per-path split.
+            if [ -n "$ip4" ] && [ -f "$sess_file" ]; then
+                read -r h_user h_gw _ h_ip6 h_bp < "$sess_file" || h_user=""
+                if [ -n "$h_user" ]; then
+                    h_t="$(acct_table)"
+                    h_s="$(acct_sid "$ip4")"
+                    h_conn="-"; h_client="-"; h_dev="-"
+                    [ -f "$vpngw_state_dir/acct/$ip4" ] \
+                        && read -r h_conn h_client h_dev < "$vpngw_state_dir/acct/$ip4"
+                    h_up="$(acct_counter_bytes "$h_t" "a_${h_s}_up")"
+                    h_dn="$(acct_counter_bytes "$h_t" "a_${h_s}_dn")"
+                    h_pools=""
+                    for h_p in $(printf '%s' "$h_bp" | tr '+' ' '); do
+                        [ "$h_p" = "-" ] && continue
+                        h_pi="$(acct_pool_id "$h_p")"
+                        h_pu="$(acct_counter_bytes "$h_t" "a_${h_s}_${h_pi}_up")"
+                        h_pd="$(acct_counter_bytes "$h_t" "a_${h_s}_${h_pi}_dn")"
+                        h_pools="${h_pools:+$h_pools,}$h_p=${h_pu:-0}:${h_pd:-0}"
+                    done
+                    printf '%s %s %s %s %s %s %s %s %s %s %s %s %s\n' \
+                        "$h_conn" "$(date +%s)" "$h_user" "$ip4" "${h_ip6:--}" \
+                        "$h_client" "${h_gw:--}" "$h_dev" \
+                        "${h_up:--}" "${h_dn:--}" \
+                        "${STATS_BYTES_IN:--}" "${STATS_BYTES_OUT:--}" \
+                        "${h_pools:--}" >> "$(acct_history_file)" 2>/dev/null \
+                        || log_error "[VPNGW-HOOK] Warning: cannot append to $(acct_history_file)"
+                fi
+            fi
             [ -n "$ip4" ] && vpngw_cleanup_session "$ip4" "$ip6"
+            [ -n "$ip4" ] && acct_cleanup_session "$ip4" "$ip6"
+            [ -n "$ip4" ] && rm -f "$vpngw_state_dir/acct/$ip4"
             [ -n "$sess_file" ] && rm -f "$sess_file"
         ) 9>"$lock"
         log "[VPNGW-HOOK] User '$username' ($ip4${ip6:+, $ip6}) gateway rules removed"

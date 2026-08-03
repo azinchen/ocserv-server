@@ -79,6 +79,14 @@ Route traffic **by destination**: CIDR pools whose matched traffic exits direct,
 | `CERT_WATCH` | `0` | When `1`, the `svc-cert-watch` service watches the `server-cert`/`server-key` files declared in `ocserv.conf` and sends ocserv a `SIGHUP` (via `cert-reload`) whenever one changes, so a renewed certificate is reloaded **without a container restart** and without dropping live sessions. Relative cert paths are resolved against the `ocserv.conf` directory. Run `docker exec <container> cert-reload` to force one reload. See [Reverse Proxy and Certificates#certificate-renewal](Reverse-Proxy-and-Certificates#certificate-renewal). |
 | `CERT_WATCH_INTERVAL` | `0` | Polling fallback for `CERT_WATCH`, in seconds (`0` = off). When positive, `svc-cert-poll` re-stats the same cert files every N seconds and reloads ocserv when their mtime/size changes — for filesystems where `inotify` doesn't deliver events (e.g. an **NFS-backed** cert directory). `stat` follows symlinks, so a certbot `live`→`archive` re-link is detected. Prefer `CERT_WATCH=1` on local/bind-mounted directories; use this where inotify can't work. Both may be set (reloads are idempotent), but normally you pick one. |
 
+### Session accounting
+
+Per-session traffic accounting for `session-report`. Feature guide: [[Session Accounting]].
+
+| Variable | Default | Description |
+|---|---|---|
+| `SESSION_HISTORY_FILE` | _(unset — tmpfs)_ | Where completed sessions are appended (one line each). By default the history lives on tmpfs and covers the container lifetime; point this at the config volume (e.g. `/etc/ocserv/session-history`) to keep it across container recreations. Rotate/truncate it yourself when needed. |
+
 ### Health monitor
 
 Opt-in Docker `HEALTHCHECK` probe. Feature guide: [[Health Monitor]].

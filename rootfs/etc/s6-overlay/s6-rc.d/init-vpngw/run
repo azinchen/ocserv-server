@@ -71,6 +71,9 @@ if [ "$gw_active" = 0 ]; then
 fi
 
 mkdir -p "$vpngw_state_dir"
+# Collection horizon marker for session-report: the state dir is tmpfs, so
+# session history covers this container start.
+date +%s > "$vpngw_state_dir/started"
 
 table="$vpn_gateway_table"
 prio="$vpn_gateway_rule_prio"
