@@ -7,10 +7,12 @@ The full cascade setup: users exit through their gateways as in [Per-User Gatewa
 - traffic to an **ads** blocklist is **rejected** for everyone subscribed.
 
 ```
-                          ┌─ destination in "ru"        ─▶ direct (server's ISP)
-alice ─▶ ocserv (gw nl) ──┼─ destination in "streaming" ─▶ gateway us
-                          ├─ destination in "ads"       ─▶ blocked
-                          └─ everything else            ─▶ gateway nl
+alice ─▶ ocserv (gateway nl)
+           │
+           ├─ destination in "ru"        ─▶ direct (server's ISP)
+           ├─ destination in "streaming" ─▶ gateway us
+           ├─ destination in "ads"       ─▶ blocked
+           └─ everything else            ─▶ gateway nl
 ```
 
 This page only shows what is **added on top of** the [Per-User Gateways](Example-Gateway-Per-User) compose — networks, sidecars and gateway/user files stay exactly the same. Concepts in [[Destination Bypass]].

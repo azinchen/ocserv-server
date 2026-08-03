@@ -7,10 +7,12 @@
 - **`block`** — reject the traffic entirely (a destination blocklist).
 
 ```
-                        ┌── destination in pool "ru"        ──▶ direct (ISP)
-client ──▶ ocserv ──────┼── destination in pool "streaming" ──▶ gateway "us"
- (mapped to gateway nl) ├── destination in pool "ads"       ──▶ blocked
-                        └── everything else                 ──▶ gateway "nl"
+client ──▶ ocserv (mapped to gateway nl)
+             │
+             ├── destination in pool "ru"        ──▶ direct (ISP)
+             ├── destination in pool "streaming" ──▶ gateway "us"
+             ├── destination in pool "ads"       ──▶ blocked
+             └── everything else                 ──▶ gateway "nl"
 ```
 
 Typical uses:

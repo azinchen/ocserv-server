@@ -5,7 +5,7 @@ Each user exits through their **own** upstream VPN: `alice` via a Netherlands co
 ```
 alice ─▶ ocserv ─▶ nordvpn-nl ─▶ internet (NL exit IP)
 bob   ─▶ ocserv ─▶ nordvpn-us ─▶ internet (US exit IP)
-carol ─▶ ocserv ────────────────▶ internet (server's own IP)
+carol ─▶ ocserv ─▶ (no upstream) internet (server's own IP)
 ```
 
 This page is a complete, working setup; concepts in [[Gateway Mode]]. It extends [One Upstream for All](Example-Gateway-Single-Upstream) — read that first if you're new to gateway mode.
