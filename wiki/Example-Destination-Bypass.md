@@ -30,23 +30,24 @@ volumes/config/
 │   └── user-bypass.conf         # user -> pools map (below), hot-reloadable
 └── pools/
     ├── sources.conf             # where to download pool lists (below)
+    ├── targets.conf             # where each pool's traffic goes (below)
     ├── ads.list                 # hand-maintained blocklist (below)
     └── ru.list                  # appears automatically (downloaded, ~11k lines)
 ```
 
 ## ocserv service — added environment
 
-Only startup-fixed settings go in compose; the maps and lists stay in the files above. (`VPN_BYPASS_TARGETS` is compose-only on purpose: the set of pools and their targets is fixed at container start — a file would suggest a hot-reloadability it cannot have. *Which users use which pools* is the part that changes, and that is a file.)
+The compose file only points at the files — every setting lives on the volume:
 
 ```yaml
   ocserv:
     # ... exactly as in Per-User Gateways, plus:
     environment:
-      # user -> pools map lives in a file, applied live on save
+      # user -> pools map, applied live on save
       - VPN_USER_BYPASS_FILE=/etc/ocserv/vpngw/user-bypass.conf
       - VPN_USER_BYPASS_WATCH=1
-      # where each pool's traffic goes (default is "direct") - startup-fixed
-      - VPN_BYPASS_TARGETS=streaming=us,ads=block
+      # pool -> target map (read at startup, like the pool set)
+      - VPN_BYPASS_TARGETS_FILE=/etc/ocserv/pools/targets.conf
       # auto-download the ru list daily; ads/streaming stay hand-maintained
       - VPN_BYPASS_SOURCES_FILE=/etc/ocserv/pools/sources.conf
       - VPN_BYPASS_UPDATE_INTERVAL=86400
@@ -66,6 +67,17 @@ guest      none
 ```
 
 Pools can also be inherited from the user's gateway instead of listed per user (`VPN_GATEWAYS_BYPASS=nl=ru+ads,...` in compose) — see [Destination Bypass#attaching-pools](Destination-Bypass#attaching-pools) for the precedence rules.
+
+## volumes/config/pools/targets.conf
+
+Where each pool's matched traffic goes: `direct` (the default for unlisted pools), a gateway name, or `block`. Targets are fixed at container start, like the pool set itself — edit this file, then restart:
+
+```
+# pool       target
+streaming    us
+ads          block
+# ru not listed -> direct
+```
 
 ## volumes/config/pools/sources.conf
 
