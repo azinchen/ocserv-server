@@ -53,10 +53,12 @@ FLAP_MIN=3
 
 TMP_BASE="/tmp/session-report.$$"
 SUMMARY="$TMP_BASE.sum"
+PATHS="$TMP_BASE.paths"
 GEO_CACHE="$TMP_BASE.geo"
 RATE_SNAP="$TMP_BASE.rate"
 : > "$SUMMARY"
-trap 'rm -f "$SUMMARY" "$GEO_CACHE" "$RATE_SNAP"' EXIT INT TERM
+: > "$PATHS"
+trap 'rm -f "$SUMMARY" "$PATHS" "$GEO_CACHE" "$RATE_SNAP" "$TMP_BASE.act"' EXIT INT TERM
 
 hr() { echo "================================================================"; }
 
@@ -157,6 +159,50 @@ breakdown() {
     fi
 }
 
+# Attribute one session's bytes to per-user path buckets for the totals
+# section: the gateway share to "via:<gw>" (or "direct" for unmapped users),
+# each pool's share to its target ("direct", "blocked", or "via:<gw>").
+# Skipped when the session has no counters.
+#   $1 = user  $2 = gateway  $3 = up  $4 = down  $5 = "pool=up:dn,..."
+emit_paths() {
+    case "$3" in ''|-) return 0 ;; esac
+    _ep_pu=0; _ep_pd=0
+    if [ "$5" != "-" ]; then
+        for _ep_e in $(printf '%s' "$5" | tr ',' ' '); do
+            _ep_p="${_ep_e%%=*}"
+            _ep_v="${_ep_e#*=}"
+            _ep_u="${_ep_v%%:*}"; _ep_d="${_ep_v##*:}"
+            _ep_pu=$((_ep_pu + _ep_u)); _ep_pd=$((_ep_pd + _ep_d))
+            _ep_t="$(pool_target "$_ep_p")"
+            case "$_ep_t" in
+                direct)     _ep_lbl="direct" ;;
+                block|drop) _ep_lbl="blocked" ;;
+                *)          _ep_lbl="via:$_ep_t" ;;
+            esac
+            echo "$1 $_ep_lbl $_ep_u $_ep_d" >> "$PATHS"
+        done
+    fi
+    _ep_gu=$(( $3 - _ep_pu )); [ "$_ep_gu" -lt 0 ] && _ep_gu=0
+    _ep_gd=$(( $4 - _ep_pd )); [ "$_ep_gd" -lt 0 ] && _ep_gd=0
+    case "$2" in
+        -|direct) echo "$1 direct $_ep_gu $_ep_gd" >> "$PATHS" ;;
+        *)        echo "$1 via:$2 $_ep_gu $_ep_gd" >> "$PATHS" ;;
+    esac
+}
+
+path_label() { # "via:nl" -> "via gateway nl", "blocked" -> "blocked (rejected)"
+    case "$1" in
+        via:*)   echo "via gateway ${1#via:}" ;;
+        blocked) echo "blocked (rejected)" ;;
+        *)       echo "$1" ;;
+    esac
+}
+
+user_paths() { # $1 = user -> "bucket up down" lines, aggregated and sorted
+    awk -v u="$1" '$1 == u { up[$2] += $3; dn[$2] += $4 }
+        END { for (k in up) print k, up[k], dn[k] }' "$PATHS" | sort
+}
+
 # JSON pools array from "pool=up:dn,..."
 json_pools() {
     [ "$1" = "-" ] && { echo "[]"; return; }
@@ -208,6 +254,7 @@ if [ "$ACCT_ACTIVE" = 1 ] && [ -d "$vpngw_state_dir/sessions" ]; then
             "$s_conn" "$NOW" "$s_user" "$s_ip4" "$s_ip6" "$s_client" "$s_gw" \
             "$s_dev" "${s_up:--}" "${s_dn:--}" "$s_pools" >> "$ACTIVE"
         [ -n "$s_up" ] && echo "$s_ip4 $s_up ${s_dn:-0}" >> "$RATE_SNAP"
+        emit_paths "$s_user" "$s_gw" "${s_up:--}" "${s_dn:-0}" "$s_pools"
     done
 fi
 
@@ -271,13 +318,21 @@ if [ "$MODE" = "json" ]; then
             case "$_j_su" in -|'') _j_su=0 ;; esac
             case "$_j_sd" in -|'') _j_sd=0 ;; esac
             echo "$h_user $_j_su $_j_sd" >> "$SUMMARY"
+            emit_paths "$h_user" "$h_gw" "$h_up" "$h_dn" "$h_pools"
         done < "$HIST"
     fi
 
     _j_tot=""
     if [ -s "$SUMMARY" ]; then
         while read -r t_u t_n t_up t_dn; do
-            _j_tot="$_j_tot,{\"user\":\"$(json_escape "$t_u")\",\"sessions\":$t_n,\"up\":$t_up,\"down\":$t_dn}"
+            _j_paths=""
+            while read -r p_k p_u p_d; do
+                [ -n "$p_k" ] || continue
+                _j_paths="$_j_paths,{\"path\":\"$(json_escape "$(path_label "$p_k")")\",\"up\":$p_u,\"down\":$p_d}"
+            done <<EOP
+$(user_paths "$t_u")
+EOP
+            _j_tot="$_j_tot,{\"user\":\"$(json_escape "$t_u")\",\"sessions\":$t_n,\"up\":$t_up,\"down\":$t_dn,\"paths\":[${_j_paths#,}]}"
         done <<EOF
 $(awk '{ n[$1]++; up[$1] += $2; dn[$1] += $3 }
     END { for (u in n) print u, n[u], up[u], dn[u] }' "$SUMMARY" | sort)
@@ -380,6 +435,7 @@ else
         [ "$_su" = "-" ] && { _su="$h_up"; _sd="$h_dn"; }
         case "$_su" in -|'') _su=0; _sd=0 ;; esac
         echo "$h_user $_su ${_sd:-0}" >> "$SUMMARY"
+        emit_paths "$h_user" "$h_gw" "$h_up" "$h_dn" "$h_pools"
     done
 fi
 echo
@@ -393,6 +449,10 @@ else
         END { for (u in n) print u, n[u], up[u], dn[u] }' "$SUMMARY" \
     | sort | while read -r t_u t_n t_up t_dn; do
         printf '%-20s %-9s %-11s %s\n' "$t_u" "$t_n" "$(hb "$t_up")" "$(hb "$t_dn")"
+        user_paths "$t_u" | while read -r p_k p_u p_d; do
+            printf '    %-24s up %-10s down %s\n' \
+                "$(path_label "$p_k")" "$(hb "$p_u")" "$(hb "$p_d")"
+        done
     done
 fi
 
