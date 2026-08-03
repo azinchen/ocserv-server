@@ -163,8 +163,8 @@ Sources must serve **plain CIDR-per-line** text (ipdeny.com zone files, country-
 
 - a source that can't be fetched — or yields not a single valid CIDR (an HTML error page, a truncated download) — is **ignored with a warning**; the pool is built from the remaining sources;
 - if **every** source of a pool fails, the published list is left untouched (last-known-good);
-- published lists live on the volume, so restarts work offline; at startup only pools with **no published list yet** are fetched immediately (a first boot with an empty volume comes up populated), existing lists are trusted until the interval elapses;
-- every successful fetch touches a `.<pool>.stamp` marker next to the list (the list itself is only rewritten when its content changed). `network-diagnostic` judges freshness by the stamp, so a stable upstream list never looks stale — a stale-pool warning means fetching itself has been failing.
+- published lists live on the volume, so restarts work offline; at startup, pools with **no published list yet** are fetched immediately (a first boot with an empty volume comes up populated), and so are pools whose last successful fetch is already **older than the interval** — so frequent container restarts can't postpone refreshes indefinitely;
+- every successful fetch touches a `.<pool>.stamp` marker next to the list (the list itself is only rewritten when its content changed). `network-diagnostic` shows both ages: `10808 lines (3d old), fetched 2h ago` means the upstream list simply hasn't changed in 3 days while fetching works fine.
 
 Force a refresh any time:
 

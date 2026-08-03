@@ -634,8 +634,17 @@ echo "Server status             : $SERVER_STATE"
 echo "Connected clients         : $CONNECTED"
 echo
 
-section "occtl show status"
-occtl_show show status
+# Only the "General info" block: the "Current stats period" counters that
+# follow are ocserv-internal aggregates since the last stats reset (sessions
+# closed due to error, RX/TX updated only on disconnect, ...) - without that
+# context they read as live problems. session-report is the place for
+# per-session detail.
+section "occtl status (general info)"
+_ocs="$(occtl_show show status)"
+case "$_ocs" in
+    *"General info:"*) printf '%s\n' "$_ocs" | awk '/^General info:/ { f = 1 } /^Current stats period:/ { exit } f' ;;
+    *) printf '%s\n' "$_ocs" ;;
+esac
 echo
 
 section "Listening sockets"
@@ -1004,32 +1013,18 @@ if [ -f "$vpngw_state_dir/bypass_pools" ]; then
         if [ -f "$_lf" ]; then
             _age="$(file_age "$_lf")"
             _lfs="$(wc -l < "$_lf") lines ($(age_fmt "${_age:-0}") old)"
-            # Freshness = last SUCCESSFUL fetch, not the list's mtime: the
-            # fetcher deliberately skips republishing an unchanged list, so a
-            # stable upstream keeps the mtime old while fetches succeed daily.
-            # It stamps .<pool>.stamp on every success; fall back to the
-            # list's mtime when no stamp exists (external publisher, or
-            # fetching never ran).
+            # The fetcher skips republishing an unchanged list but stamps
+            # .<pool>.stamp on every successful fetch - show that too. Age
+            # alone is informational (a list may simply not change; a restart
+            # postpones the next cycle), so it never warns.
             _fage="$(file_age "$vpn_bypass_pools_dir/.$_p.stamp")"
-            if [ -n "$_fage" ]; then
-                _lfs="$_lfs, fetched $(age_fmt "$_fage") ago"
-            else
-                _fage="$_age"
-            fi
-            # Freshness vs the fetcher interval (allow one missed run)
-            if [ -n "$vpn_bypass_sources_file" ] && [ "${vpn_bypass_update_interval:-0}" -gt 0 ] 2>/dev/null \
-                && [ -n "$_fage" ] && [ "$_fage" -gt $((vpn_bypass_update_interval * 2)) ] \
-                && grep -q "^[[:space:]]*${_p}[[:space:]]" "$vpn_bypass_sources_file" 2>/dev/null; then
-                _stale_pools="${_stale_pools:-} $_p($(age_fmt "$_fage"))"
-            fi
+            [ -n "$_fage" ] && _lfs="$_lfs, fetched $(age_fmt "$_fage") ago"
         else
             _lfs="MISSING (empty pool)"
         fi
         printf '%-14s %-10s %-6s %-22s %-14s %s\n' "$_p" "$_t" "$_m" \
             "$_n4 + $_n6 intervals" "$_sub" "$_lfs"
     done < "$vpngw_state_dir/bypass_targets"
-    [ -n "${_stale_pools:-}" ] \
-        && warn "pool(s) without a successful fetch for over 2x VPN_BYPASS_UPDATE_INTERVAL:${_stale_pools} - check bypass-fetch (docker logs, grep BYPASS-FETCH)"
 
     # Probe each distinct bypass target through its LIVE fwmark rule: proves
     # the prio-800 policy rules and the target's routing table end to end.
