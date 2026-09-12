@@ -26,9 +26,9 @@ RUN set -eux && \
         lz4-dev=1.10.0-r1 \
         protobuf-c-dev=1.5.2-r2 \
         linux-headers=7.0.0-r1 \
-        curl=8.21.0-r0 \
+        curl=8.22.0-r0 \
         tar=1.35-r5 \
-        xz=5.8.3-r0 \
+        xz=5.8.4-r0 \
         patch=2.8-r0 \
         && \
     curl -fsSL "https://www.infradead.org/ocserv/download/ocserv-${OCSERV_VERSION}.tar.xz" -o /tmp/ocserv.tar.xz && \
@@ -60,7 +60,7 @@ RUN echo "**** install security fix packages ****" && \
     echo "**** install mandatory packages ****" && \
     apk --no-cache --no-progress add \
         tar=1.35-r5 \
-        xz=5.8.3-r0 \
+        xz=5.8.4-r0 \
         wget=1.25.0-r3 \
         && \
     echo "**** create folders ****" && \
