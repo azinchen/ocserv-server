@@ -1,4 +1,4 @@
-ARG ALPINE_VERSION=3.24.1
+ARG ALPINE_VERSION=3.24.2
 
 ############################
 # 1) Build ocserv
@@ -162,7 +162,7 @@ RUN apk --no-cache --no-progress add \
     lz4-libs=1.10.0-r1 \
     protobuf-c=1.5.2-r2 \
     talloc=2.4.4-r1 \
-    ca-certificates=20260611-r0 \
+    ca-certificates=20260909-r0 \
     shadow=4.18.0-r1 \
     libcap=2.78-r0 \
     nftables=1.1.6-r1 \
