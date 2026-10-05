@@ -211,4 +211,54 @@ $(printf '%s' "$mss_in" | awk 'NF { print "        " $0 }')
 }
 EOF
 
+# TTL / hop-limit normalization (TTL_SET). Rewrite the TTL and hop-limit of
+# forwarded client traffic as it leaves via WAN_IF or any gateway-egress
+# interface. postrouting runs after the kernel's forward decrement, so the next
+# hop sees exactly TTL_SET - and every traceroute probe that survives this node
+# leaves with a fresh TTL and reaches the destination, so all downstream hops
+# (sidecars, further gates, the VPN provider, the internet path) collapse out
+# of a client trace. Scoped by iifname to the tunnel: the container's own
+# traffic (health probes, fetches) is untouched. A packet looping THROUGH this
+# node would never expire; the fail-closed forward policy rules that out. An
+# invalid value or a rule the kernel refuses stops startup - an exposed
+# topology is worse than a stopped container. TTL_INC (per-node hop hiding) is
+# reserved for a later phase: nft has no increment expression and it would
+# need the xt TTL/HL compat targets. Refuse it rather than silently ignore it.
+if [ -n "$ttl_inc" ]; then
+    log_error "[INIT-NAT] TTL_INC is not supported by this image yet (reserved for a later phase); unset it or use TTL_SET"
+    sleep infinity
+fi
+if [ -n "$ttl_set" ]; then
+    case "$ttl_set" in
+        ''|*[!0-9]*) ttl_valid=0 ;;
+        *) if [ "$ttl_set" -ge 1 ] && [ "$ttl_set" -le 255 ]; then ttl_valid=1; else ttl_valid=0; fi ;;
+    esac
+    if [ "$ttl_valid" != "1" ]; then
+        log_error "[INIT-NAT] Invalid TTL_SET '$ttl_set' (expected an integer 1-255)"
+        sleep infinity
+    fi
+    ttl_rules=""
+    for dev in $mss_devs; do
+        ttl_rules="$ttl_rules
+        iifname \"$vpn_ifname\" oifname \"$dev\" ip ttl set $ttl_set"
+        if [ "$ipv6_forward" = "1" ]; then
+            ttl_rules="$ttl_rules
+        iifname \"$vpn_ifname\" oifname \"$dev\" ip6 hoplimit set $ttl_set"
+        fi
+    done
+    log "[INIT-NAT] Setting client TTL/hop-limit to $ttl_set on egress via $mss_devs"
+    nft delete table inet ocserv_ttl 2>/dev/null || true
+    if ! nft -f - <<EOF
+table inet ocserv_ttl {
+    chain postrouting {
+        type filter hook postrouting priority mangle; policy accept;$ttl_rules
+    }
+}
+EOF
+    then
+        log_error "[INIT-NAT] TTL_SET rules failed to load; refusing to start with the topology exposed"
+        sleep infinity
+    fi
+fi
+
 log "[INIT-NAT] NAT and forwarding setup complete"

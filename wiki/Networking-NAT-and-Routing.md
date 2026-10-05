@@ -70,6 +70,43 @@ docker exec ocserv-server nft list table inet ocserv_mss
 
 The clamp is non-fatal: if the rules fail to load, `init-nat` logs a warning and the container still starts.
 
+## TTL normalization
+
+Every VPN node in a cascade is an IP router: it decrements the TTL and shows up as a distinct `traceroute` hop. With a NordVPN sidecar behind this server, or a server-to-server cascade through [openconnect-client](https://github.com/azinchen/openconnect-client), a client trace to `1.1.1.1` therefore lists every internal hop and private tunnel subnet — the cascade depth is a fingerprint.
+
+`TTL_SET=<n>` makes `init-nat` install a small mangle table (`inet ocserv_ttl`) that rewrites the IPv4 TTL (and the IPv6 hop-limit when `IPV6_FORWARD=1`) of **forwarded client traffic** to `n` as it leaves via `WAN_IF` or any gateway-egress interface:
+
+```
+table inet ocserv_ttl {
+    chain postrouting {
+        type filter hook postrouting priority mangle; policy accept;
+        iifname "vpns*" oifname "eth0" ip ttl set 64
+        iifname "vpns*" oifname "eth0" ip6 hoplimit set 64
+    }
+}
+```
+
+The rewrite happens in `postrouting`, **after** the kernel's forward decrement and its "TTL expired" check. Two consequences:
+
+- **The server itself stays visible** as the client's first hop (a probe that expires here is answered here, before the rewrite).
+- **Everything behind it disappears.** Every probe that survives this node leaves with a fresh TTL and reaches the destination, so the sidecar, further gates, the VPN provider and the internet path all collapse out of the trace: the client sees this server, then the destination. Applied on the entry gate of a cascade, one variable hides the whole topology.
+
+It also normalizes what the next hop sees regardless of how deep the cascade is (each further hop still decrements, so set it on the terminal egress too if the destination must see an exact value).
+
+Notes:
+
+- Only traffic **from the tunnel** (`iifname vpns*`) is rewritten; the container's own traffic (health probes, bypass fetches) is untouched.
+- Must be an integer `1`–`255`. An invalid value, or a rule the kernel refuses, **stops the container** with a clear log line rather than silently running with the topology exposed. Unset means no rule at all — behavior is byte-identical to before.
+- A packet that loops *through* a rewriting node would never expire. The rules are bound to the tunnel ingress and the egress interfaces (never "all interfaces") and the forward policy is fail-closed, so such a loop cannot form.
+- With `TTL_SET` on, a traceroute **past** this server shows nothing — expected, but remember it when debugging a downstream path. Temporarily unset it if you need to trace the cascade.
+- `TTL_INC` (hiding *this* node from a trace by cancelling its own decrement) is the same feature's second phase across the cascade images. nftables has no increment expression, so it is not implemented here yet; setting it stops the container instead of being silently ignored.
+
+Inspect it live:
+
+```bash
+docker exec ocserv-server nft list table inet ocserv_ttl
+```
+
 ## Keep three things in sync
 
 For NAT to work, these must agree:

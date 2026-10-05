@@ -1123,7 +1123,7 @@ echo
 # ---- nftables ---------------------------------------------------------------
 
 section "nftables (ocserv tables; bypass sets suppressed with -t)"
-for _tbl_name in ocserv ocserv_mss ocserv_gw; do
+for _tbl_name in ocserv ocserv_mss ocserv_ttl ocserv_gw; do
     if nft list table inet "$_tbl_name" >/dev/null 2>&1; then
         nft list table inet "$_tbl_name" 2>/dev/null
     else

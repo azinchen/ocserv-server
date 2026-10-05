@@ -44,6 +44,7 @@ Oneshot. Prepares networking:
 - Enables IPv4 forwarding (and IPv6 forwarding if `IPV6_FORWARD=1`). If IPv4 forwarding can't be enabled, it logs guidance and stops (the container needs the `ip_forward` sysctl).
 - Installs the `table inet ocserv` nftables rules: a forward chain for the tunnel interface and a postrouting masquerade for `VPN_SUBNET` via `WAN_IF`. Optionally IPv6 masquerade when `IPV6_NAT=1`. See [[Networking NAT and Routing]].
 - Installs an MSS clamp for the client CSTP connection in a separate table (`inet ocserv_mss`), on SYN in both directions on `WAN_IF` and any gateway-egress interface — to each interface's MTU by default, or to a hard cap when `MSS=<n>` is set; only ever lowering an advertised MSS. Non-fatal: a failure to load logs a warning but doesn't stop startup. See [Networking NAT and Routing#mss-clamping](Networking-NAT-and-Routing#mss-clamping).
+- When `TTL_SET=<n>` is set, installs `inet ocserv_ttl`: a postrouting mangle rule per egress interface that rewrites the TTL/hop-limit of forwarded client traffic, hiding every hop behind this server from client traceroutes. Fatal on an invalid value or a load failure. `TTL_INC` is reserved and refused. See [Networking NAT and Routing#ttl-normalization](Networking-NAT-and-Routing#ttl-normalization).
 
 ### init-vpngw
 
