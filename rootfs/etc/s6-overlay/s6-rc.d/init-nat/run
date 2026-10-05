@@ -229,12 +229,13 @@ if [ -n "$ttl_inc" ]; then
     sleep infinity
 fi
 if [ -n "$ttl_set" ]; then
+    # Leading zeros are refused too: nft would read 064 as octal (52).
     case "$ttl_set" in
-        ''|*[!0-9]*) ttl_valid=0 ;;
+        ''|*[!0-9]*|0*|????*) ttl_valid=0 ;;
         *) if [ "$ttl_set" -ge 1 ] && [ "$ttl_set" -le 255 ]; then ttl_valid=1; else ttl_valid=0; fi ;;
     esac
     if [ "$ttl_valid" != "1" ]; then
-        log_error "[INIT-NAT] Invalid TTL_SET '$ttl_set' (expected an integer 1-255)"
+        log_error "[INIT-NAT] Invalid TTL_SET '$ttl_set' (expected an integer 1-255, no leading zeros)"
         sleep infinity
     fi
     ttl_rules=""
