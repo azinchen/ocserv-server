@@ -113,6 +113,7 @@ Grouped by feature; every variable is one line here — the **[Configuration Ref
 | `WAN_IF` | _(auto)_ | NAT egress interface; auto-detected from the default route. |
 | `VPN_IF` | `vpns+` | Tunnel device pattern; matches `device = vpns` in `ocserv.conf`. |
 | `MSS` | _(unset)_ | Clamp client TCP MSS (e.g. `1300`) when the client path MTU is small and PMTUD is broken. |
+| `TTL_SET` | _(unset)_ | Rewrite the TTL/hop-limit of client traffic on egress (e.g. `64`); hides every hop behind this server from client traceroutes. |
 
 ### IPv6
 
