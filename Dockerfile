@@ -20,7 +20,7 @@ RUN set -eux && \
         readline-dev=8.3.3-r1 \
         libtasn1-dev=4.21.0-r0 \
         talloc-dev=2.4.4-r1 \
-        libseccomp-dev=2.6.0-r2 \
+        libseccomp-dev=2.6.1-r0 \
         libnl3-dev=3.11.0-r0 \
         libev-dev=4.33-r1 \
         lz4-dev=1.10.0-r1 \
@@ -157,7 +157,7 @@ RUN apk --no-cache --no-progress add \
     gnutls-utils=3.8.13-r0 \
     p11-kit=0.26.2-r0 \
     libnl3=3.11.0-r0 \
-    libseccomp=2.6.0-r2 \
+    libseccomp=2.6.1-r0 \
     libev=4.33-r1 \
     lz4-libs=1.10.0-r1 \
     protobuf-c=1.5.2-r2 \
