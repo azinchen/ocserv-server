@@ -5,7 +5,7 @@ ARG ALPINE_VERSION=3.24.2
 ############################
 FROM alpine:${ALPINE_VERSION} AS ocserv-build
 
-ARG OCSERV_VERSION=1.5.0
+ARG OCSERV_VERSION=1.6.0
 
 COPY patches/ /tmp/patches/
 
@@ -137,7 +137,7 @@ FROM alpine:${ALPINE_VERSION}
 
 ARG IMAGE_VERSION=N/A \
     BUILD_DATE=N/A \
-    OCSERV_VERSION=1.5.0
+    OCSERV_VERSION=1.6.0
 
 LABEL org.opencontainers.image.title="OpenConnect VPN Server (ocserv) Docker container" \
       org.opencontainers.image.description="OpenConnect VPN Server (ocserv) in a Docker container with s6-overlay" \
