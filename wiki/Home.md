@@ -10,18 +10,20 @@ It runs unmodified ocserv, so every client and protocol ocserv supports works he
 
 ## What you get
 
-- **ocserv** built from source on **Alpine Linux** (Meson build, nftables firewall backend)
-- **Automatic NAT & forwarding** — the container sets up masquerading for your VPN subnet on startup
-- **s6-overlay** supervision — clean startup ordering, logging, and restarts
-- **Camouflage mode** — hide the VPN behind what looks like an ordinary HTTPS website to defeat DPI / censorship
-- **Gateway mode** — chain clients out through an upstream VPN (e.g. NordVPN) with a fail-closed kill switch
-- **Per-user routing** — map each user to a different upstream gateway; hot-reloadable, no static IPs needed
-- **Destination bypass** — route by destination: country pools direct, chosen services via a specific exit, ad/malware pools blocked; lists auto-fetched and hot-reloaded
-- **Certificate hot-reload** — a renewed Let's Encrypt cert is picked up without a restart or dropped sessions
-- **Session accounting** — `session-report` shows every session's connect/disconnect times and its traffic split per gateway and bypass pool
-- **Opt-in health monitor** — Docker-native `HEALTHCHECK`: server liveness, routing integrity, and (optionally) real egress probes per gateway
-- **Reverse-proxy friendly** — designed to share Let's Encrypt certificates with [SWAG](https://github.com/linuxserver/docker-swag)
-- **Multi-arch images** published to GHCR (and Docker Hub for releases)
+- **Broad client support** — openconnect, Cisco AnyConnect, mobile apps, Keenetic, OpenWrt ([[Clients and Devices]])
+- **Self-configuring networking** — NAT, forwarding and MSS clamping set up automatically ([[Networking NAT and Routing]])
+- **Camouflage mode** — looks like a plain HTTPS site; only clients with the secret get in ([[Camouflage Mode]])
+- **Gateway mode** — route clients out through upstream VPN containers such as NordVPN ([[Gateway Mode]])
+- **Per-user routing** — map each user to a different upstream exit, steered on connect ([Gateway Mode](Gateway-Mode#per-user-gateways))
+- **Destination bypass** — per-destination routing: direct, via a chosen exit, or blocked ([[Destination Bypass]])
+- **Auto-fetched IP lists** — country CIDR lists fetched on a schedule, swapped in atomically ([Destination Bypass](Destination-Bypass#fetching-lists-automatically))
+- **Fail-closed kill switch** — if an upstream is down, clients lose internet rather than leak ([Gateway Mode](Gateway-Mode#kill-switch-fail-closed))
+- **Hot-reload everything** — user maps, pools, gateways and certs reload live, sessions kept ([Gateway Mode](Gateway-Mode#hot-reloading-the-user-map))
+- **Reverse-proxy & Let's Encrypt friendly** — share SWAG's certs; renewals need no restart ([[Reverse Proxy and Certificates]])
+- **Session accounting** — per-session times and traffic split per gateway and bypass pool ([[Session Accounting]])
+- **Opt-in health monitor** — `HEALTHCHECK` for liveness, routing integrity and egress probes ([[Health Monitor]])
+- **IPv6 without leaks** — optional NAT66; dropped fail-closed when an upstream has no IPv6 ([Networking NAT and Routing](Networking-NAT-and-Routing#ipv6))
+- **Multi-arch, from source** — amd64 / arm64 / riscv64, ocserv built from source, supervised by s6-overlay ([[Building and CI]])
 
 ---
 
