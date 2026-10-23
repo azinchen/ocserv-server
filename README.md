@@ -20,26 +20,26 @@ OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a small self
 
 ## ✨ Key Features
 
-- **🔐 Broad client support** — everything ocserv supports (the image runs it unmodified): the `openconnect` client, Cisco AnyConnect / Secure Client, mobile apps, and routers such as Keenetic / Netcraze, OpenWrt and GL.iNet ([details][wiki-clients])
-- **🚀 Self-configuring networking** — NAT, forwarding and MSS clamping set up automatically with nftables; just mount a config and go ([details][wiki-network])
-- **🕵️ Camouflage mode** — to probes and DPI the server looks like an ordinary HTTPS website; only clients that know the secret reach the VPN ([details][wiki-camo])
-- **🚪 Gateway mode** — route clients out through upstream VPN containers (e.g. NordVPN) instead of the host's connection ([details][wiki-gateway])
-- **👥 Per-user routing** — map each user to a different upstream exit; sessions steered on connect, no static IPs needed ([details][wiki-peruser])
-- **🎯 Destination bypass** — route by *destination*: country pools go direct, chosen services out a specific exit, ad/malware pools blocked ([details][wiki-bypass])
-- **📥 Auto-fetched IP lists** — country CIDR lists downloaded on a schedule, validated, and swapped in atomically ([details][wiki-fetch])
-- **🛡️ Fail-closed kill switch** — nftables next-hop guards on every routed path: if an upstream is down, clients lose internet rather than leak ([details][wiki-killswitch])
-- **🔄 Hot-reload everything** — user maps, pool lists, DNS-named gateway addresses and TLS certificates all reload live, without dropping sessions ([details][wiki-reload])
-- **🔒 Reverse-proxy & Let's Encrypt friendly** — share SWAG's certificates; renewals are picked up without a restart ([details][wiki-certs])
-- **📊 Session accounting** — `session-report` shows every session's connect/disconnect times and its traffic split per gateway and bypass pool ([details][wiki-sessions])
-- **🩺 Opt-in health monitor** — Docker-native `HEALTHCHECK`: server liveness, routing integrity, and (optionally) real egress probes per gateway ([details][wiki-health])
-- **📵 IPv6 without leaks** — optional NAT66; when an upstream has no IPv6, client IPv6 is rejected fail-closed instead of escaping ([details][wiki-ipv6])
-- **📦 Multi-arch, from source** — amd64 / arm64 / riscv64 images, ocserv built from source, supervised by s6-overlay
+- **🔐 Broad client support** — openconnect, Cisco AnyConnect, mobile apps, Keenetic, OpenWrt ([details][wiki-clients])
+- **🚀 Self-configuring networking** — NAT, forwarding and MSS clamping set up automatically ([details][wiki-network])
+- **🕵️ Camouflage mode** — looks like a plain HTTPS site; only clients with the secret get in ([details][wiki-camo])
+- **🚪 Gateway mode** — route clients out through upstream VPN containers such as NordVPN ([details][wiki-gateway])
+- **👥 Per-user routing** — map each user to a different upstream exit, steered on connect ([details][wiki-peruser])
+- **🎯 Destination bypass** — per-destination routing: direct, via a chosen exit, or blocked ([details][wiki-bypass])
+- **📥 Auto-fetched IP lists** — country CIDR lists fetched on a schedule, swapped in atomically ([details][wiki-fetch])
+- **🛡️ Fail-closed kill switch** — if an upstream is down, clients lose internet rather than leak ([details][wiki-killswitch])
+- **🔄 Hot-reload everything** — user maps, pools, gateways and certs reload live, sessions kept ([details][wiki-reload])
+- **🔒 Reverse-proxy & Let's Encrypt friendly** — share SWAG's certs; renewals need no restart ([details][wiki-certs])
+- **📊 Session accounting** — per-session times and traffic split per gateway and bypass pool ([details][wiki-sessions])
+- **🩺 Opt-in health monitor** — `HEALTHCHECK` for liveness, routing integrity and egress probes ([details][wiki-health])
+- **📵 IPv6 without leaks** — optional NAT66; dropped fail-closed when an upstream has no IPv6 ([details][wiki-ipv6])
+- **📦 Multi-arch, from source** — amd64 / arm64 / riscv64, ocserv built from source, supervised by s6-overlay
 
 > **📖 [Full documentation on the Wiki][wiki-home]** — setup guides, ready-to-use configurations, feature guides, troubleshooting, FAQ, and architecture.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ```yaml
 # docker-compose.yml
@@ -80,7 +80,7 @@ You provide an `ocserv.conf` and a certificate in the config volume — ready-to
 | `--device /dev/net/tun` | create the tunnel device |
 | `--sysctl net.ipv4.ip_forward=1` | forward client traffic to the internet |
 
-## Common Setups
+## 🧩 Common Setups
 
 | I want to… | Guide |
 |---|---|
@@ -101,7 +101,7 @@ For example, chaining every client out through a NordVPN container is just:
       - VPN_GATEWAY=172.28.0.2        # the nordvpn container, kill switch included
 ```
 
-## Environment Variables
+## ⚙️ Environment Variables
 
 Grouped by feature; every variable is one line here — the **[Configuration Reference][wiki-config]** has the full descriptions.
 
@@ -179,7 +179,7 @@ Grouped by feature; every variable is one line here — the **[Configuration Ref
 | `CERT_WATCH` | `0` | `1` = watch the cert/key files from `ocserv.conf` and reload ocserv on renewal, no restart. |
 | `CERT_WATCH_INTERVAL` | `0` | Polling fallback every N seconds for filesystems without inotify (e.g. NFS). |
 
-## Build
+## 🏗️ Build
 
 ```bash
 docker build -t ocserv-server .
@@ -187,7 +187,7 @@ docker build -t ocserv-server .
 
 Base: Alpine Linux · Init: s6-overlay · VPN: ocserv (built from source) · Firewall: nftables
 
-## Issues
+## 🐛 Issues
 
 If you have any problems with or questions about this image, please contact me through a [GitHub issue][github-issues-link] or [email][email-link].
 
@@ -199,7 +199,7 @@ docker exec ocserv-server network-diagnostic
 
 It prints server status, config sanity checks, certificate state (issuer + expiry), a camouflage self-test, gateway/bypass state with live egress probes (public IP through each gateway and bypass target), connected sessions with live traffic counters, routing and firewall state, and `[ok]`/`[warn]` verdicts (non-zero exit on warnings). `--explain <user> <ip>` tells you which path a destination takes; `--json` emits a machine-readable summary.
 
-## License
+## 📄 License
 
 MIT — see [LICENSE](LICENSE).
 
