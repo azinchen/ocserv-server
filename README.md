@@ -20,20 +20,20 @@ OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a small self
 
 ## ✨ Key Features
 
-- **🔐 Broad client support** — everything ocserv supports (the image runs it unmodified): the `openconnect` client, Cisco AnyConnect / Secure Client, mobile apps, and routers such as Keenetic / Netcraze, OpenWrt and GL.iNet ([details][wiki-clients])
-- **🚀 Self-configuring networking** — NAT, forwarding and MSS clamping set up automatically with nftables; just mount a config and go ([details][wiki-network])
-- **🕵️ Camouflage mode** — to probes and DPI the server looks like an ordinary HTTPS website; only clients that know the secret reach the VPN ([details][wiki-camo])
-- **🚪 Gateway mode** — route clients out through upstream VPN containers (e.g. NordVPN) instead of the host's connection ([details][wiki-gateway])
-- **👥 Per-user routing** — map each user to a different upstream exit; sessions steered on connect, no static IPs needed ([details][wiki-peruser])
-- **🎯 Destination bypass** — route by *destination*: country pools go direct, chosen services out a specific exit, ad/malware pools blocked ([details][wiki-bypass])
-- **📥 Auto-fetched IP lists** — country CIDR lists downloaded on a schedule, validated, and swapped in atomically ([details][wiki-fetch])
-- **🛡️ Fail-closed kill switch** — nftables next-hop guards on every routed path: if an upstream is down, clients lose internet rather than leak ([details][wiki-killswitch])
-- **🔄 Hot-reload everything** — user maps, pool lists, DNS-named gateway addresses and TLS certificates all reload live, without dropping sessions ([details][wiki-reload])
-- **🔒 Reverse-proxy & Let's Encrypt friendly** — share SWAG's certificates; renewals are picked up without a restart ([details][wiki-certs])
-- **📊 Session accounting** — `session-report` shows every session's connect/disconnect times and its traffic split per gateway and bypass pool ([details][wiki-sessions])
-- **🩺 Opt-in health monitor** — Docker-native `HEALTHCHECK`: server liveness, routing integrity, and (optionally) real egress probes per gateway ([details][wiki-health])
-- **📵 IPv6 without leaks** — optional NAT66; when an upstream has no IPv6, client IPv6 is rejected fail-closed instead of escaping ([details][wiki-ipv6])
-- **📦 Multi-arch, from source** — amd64 / arm64 / riscv64 images, ocserv built from source, supervised by s6-overlay
+- **🔐 Broad client support** — openconnect, Cisco AnyConnect, mobile apps, Keenetic, OpenWrt ([details][wiki-clients])
+- **🚀 Self-configuring networking** — NAT, forwarding and MSS clamping set up automatically ([details][wiki-network])
+- **🕵️ Camouflage mode** — looks like a plain HTTPS site; only clients with the secret get in ([details][wiki-camo])
+- **🚪 Gateway mode** — route clients out through upstream VPN containers such as NordVPN ([details][wiki-gateway])
+- **👥 Per-user routing** — map each user to a different upstream exit, steered on connect ([details][wiki-peruser])
+- **🎯 Destination bypass** — per-destination routing: direct, via a chosen exit, or blocked ([details][wiki-bypass])
+- **📥 Auto-fetched IP lists** — country CIDR lists fetched on a schedule, swapped in atomically ([details][wiki-fetch])
+- **🛡️ Fail-closed kill switch** — if an upstream is down, clients lose internet rather than leak ([details][wiki-killswitch])
+- **🔄 Hot-reload everything** — user maps, pools, gateways and certs reload live, sessions kept ([details][wiki-reload])
+- **🔒 Reverse-proxy & Let's Encrypt friendly** — share SWAG's certs; renewals need no restart ([details][wiki-certs])
+- **📊 Session accounting** — per-session times and traffic split per gateway and bypass pool ([details][wiki-sessions])
+- **🩺 Opt-in health monitor** — `HEALTHCHECK` for liveness, routing integrity and egress probes ([details][wiki-health])
+- **📵 IPv6 without leaks** — optional NAT66; dropped fail-closed when an upstream has no IPv6 ([details][wiki-ipv6])
+- **📦 Multi-arch, from source** — amd64 / arm64 / riscv64, ocserv built from source, supervised by s6-overlay
 
 > **📖 [Full documentation on the Wiki][wiki-home]** — setup guides, ready-to-use configurations, feature guides, troubleshooting, FAQ, and architecture.
 
