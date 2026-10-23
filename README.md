@@ -56,6 +56,7 @@ services:
       - net.ipv4.ip_forward=1
     ports:
       - 443:443/tcp
+      - 443:443/udp
     environment:
       - VPN_SUBNET=10.10.0.0/24
     volumes:

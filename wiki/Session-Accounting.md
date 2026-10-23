@@ -66,7 +66,7 @@ The [gateway-mode connect/disconnect hook](Gateway-Mode) already runs for every 
 - **total (forwarded)** counts traffic actually forwarded between the tunnel and the WAN — the numbers the per-path split is computed from (`via gateway` = total − all pools).
 - **total (ocserv)** (completed sessions) is ocserv's own count of tunnel bytes. It also includes traffic that terminates *in* the container — tunneled DNS, for example — so it is normally slightly higher than the forwarded total.
 - A pool's share counts traffic to/from that pool's addresses **as attached at connect time**; if you change a user's pools with `vpngw-reload` mid-session, routing follows immediately but the new pool's counters start with the next session.
-- Traffic that the [kill switch](Gateway-Mode#the-kill-switch) rejects (fail-closed drops) is counted as "up" — the client did send it — but never produces "down" bytes.
+- Traffic that the [kill switch](Gateway-Mode#kill-switch-fail-closed) rejects (fail-closed drops) is counted as "up" — the client did send it — but never produces "down" bytes.
 
 ## Data lifetime
 
