@@ -39,7 +39,7 @@ OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a small self
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ```yaml
 # docker-compose.yml
@@ -80,7 +80,7 @@ You provide an `ocserv.conf` and a certificate in the config volume — ready-to
 | `--device /dev/net/tun` | create the tunnel device |
 | `--sysctl net.ipv4.ip_forward=1` | forward client traffic to the internet |
 
-## Common Setups
+## 🧩 Common Setups
 
 | I want to… | Guide |
 |---|---|
@@ -101,7 +101,7 @@ For example, chaining every client out through a NordVPN container is just:
       - VPN_GATEWAY=172.28.0.2        # the nordvpn container, kill switch included
 ```
 
-## Environment Variables
+## ⚙️ Environment Variables
 
 Grouped by feature; every variable is one line here — the **[Configuration Reference][wiki-config]** has the full descriptions.
 
@@ -179,7 +179,7 @@ Grouped by feature; every variable is one line here — the **[Configuration Ref
 | `CERT_WATCH` | `0` | `1` = watch the cert/key files from `ocserv.conf` and reload ocserv on renewal, no restart. |
 | `CERT_WATCH_INTERVAL` | `0` | Polling fallback every N seconds for filesystems without inotify (e.g. NFS). |
 
-## Build
+## 🏗️ Build
 
 ```bash
 docker build -t ocserv-server .
@@ -187,7 +187,7 @@ docker build -t ocserv-server .
 
 Base: Alpine Linux · Init: s6-overlay · VPN: ocserv (built from source) · Firewall: nftables
 
-## Issues
+## 🐛 Issues
 
 If you have any problems with or questions about this image, please contact me through a [GitHub issue][github-issues-link] or [email][email-link].
 
@@ -199,7 +199,7 @@ docker exec ocserv-server network-diagnostic
 
 It prints server status, config sanity checks, certificate state (issuer + expiry), a camouflage self-test, gateway/bypass state with live egress probes (public IP through each gateway and bypass target), connected sessions with live traffic counters, routing and firewall state, and `[ok]`/`[warn]` verdicts (non-zero exit on warnings). `--explain <user> <ip>` tells you which path a destination takes; `--json` emits a machine-readable summary.
 
-## License
+## 📄 License
 
 MIT — see [LICENSE](LICENSE).
 
