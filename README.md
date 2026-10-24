@@ -190,7 +190,7 @@ Base: Alpine Linux · Init: s6-overlay · VPN: ocserv (built from source) · Fir
 
 ## 🐛 Issues
 
-If you have any problems with or questions about this image, please contact me through a [GitHub issue][github-issues-link] or [email][email-link].
+If you have any problems with or questions about this image, please open a [GitHub issue][github-issues-link].
 
 Check the **[Troubleshooting][wiki-troubleshoot]** and **[FAQ][wiki-faq]** wiki pages first — and attach the output of the built-in diagnostic to any report:
 
@@ -247,4 +247,3 @@ MIT — see [LICENSE](LICENSE).
 [wiki-troubleshoot]: https://github.com/azinchen/ocserv-server/wiki/Troubleshooting
 [wiki-faq]: https://github.com/azinchen/ocserv-server/wiki/FAQ
 
-[email-link]: mailto:alexander@zinchenko.com
