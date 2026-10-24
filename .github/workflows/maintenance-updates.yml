@@ -54,6 +54,8 @@ jobs:
           commit-message: "deps: update ${{ steps.update-apk.outputs.updated_count }} APK package(s) (${{ env.update_date }})"
           delete-branch: true
           title: "📦 Update APK packages - ${{ env.update_date }}"
+          labels: |
+            dependencies
           body: |
             ## 📦 APK Package Updates
             
@@ -127,6 +129,8 @@ jobs:
           commit-message: "deps: bump ${{ env.repo_name }} to v${{ env.package_version }}"
           delete-branch: true
           title: "📋 Bump ${{ env.repo_name }} to v${{ env.package_version }}"
+          labels: |
+            dependencies
           body: |
             ## 📋 Package Version Update
             
@@ -183,6 +187,8 @@ jobs:
           commit-message: "deps: bump ocserv to v${{ steps.get-version.outputs.ocserv_version }}"
           delete-branch: true
           title: "🔄 Bump ocserv to v${{ steps.get-version.outputs.ocserv_version }}"
+          labels: |
+            dependencies
           body: |
             ## 🔄 Ocserv Version Update
             
@@ -275,6 +281,8 @@ jobs:
           commit-message: "deps: bump Alpine to v${{ steps.get-alpine.outputs.latest }} (${{ env.update_date }})"
           delete-branch: true
           title: "🐧 Bump Alpine to v${{ steps.get-alpine.outputs.latest }} - ${{ env.update_date }}"
+          labels: |
+            dependencies
           body: |
             ## 🐧 Alpine Base Image Update
 
