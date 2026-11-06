@@ -1,4 +1,4 @@
-ARG ALPINE_VERSION=3.24.3
+ARG ALPINE_VERSION=3.24.4
 
 ############################
 # 1) Build ocserv
