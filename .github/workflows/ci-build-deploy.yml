@@ -18,7 +18,7 @@ permissions:
 
 env:
   # Multi-platform builds for production (main/tags)
-  PLATFORMS: "linux/amd64,linux/arm64,linux/riscv64"
+  PLATFORMS: "linux/amd64,linux/arm64"
   # Fast builds for development branches (amd64 only)
   DEV_PLATFORMS: "linux/amd64"  # Only build for amd64 on development branches for speed
 

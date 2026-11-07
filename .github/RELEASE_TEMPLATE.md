@@ -32,7 +32,7 @@ docker pull azinchen/ocserv-server:X.Y.Z-N
 docker pull ghcr.io/azinchen/ocserv-server:X.Y.Z-N
 ```
 
-Multi-arch: `amd64`, `arm64`, `riscv64`. `latest` follows this release.
+Multi-arch: `amd64`, `arm64`. `latest` follows this release.
 
 ### ⬆️ Upgrade notes
 
