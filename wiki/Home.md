@@ -23,7 +23,7 @@ It runs unmodified ocserv, so every client and protocol ocserv supports works he
 - **Session accounting** — per-session times and traffic split per gateway and bypass pool ([[Session Accounting]])
 - **Opt-in health monitor** — `HEALTHCHECK` for liveness, routing integrity and egress probes ([[Health Monitor]])
 - **IPv6 without leaks** — optional NAT66; dropped fail-closed when an upstream has no IPv6 ([Networking NAT and Routing](Networking-NAT-and-Routing#ipv6))
-- **Multi-arch, from source** — amd64 / arm64 / riscv64, ocserv built from source, supervised by s6-overlay ([[Building and CI]])
+- **Multi-arch, from source** — amd64 / arm64, ocserv built from source, supervised by s6-overlay ([[Building and CI]])
 
 ---
 

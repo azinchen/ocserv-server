@@ -27,7 +27,7 @@ So:
 - **Latest development build:** `ghcr.io/azinchen/ocserv-server:dev`
 - **Latest release:** `azinchen/ocserv-server:latest` (or pin a specific `:<ocserv_version>-<n>`, e.g. `:1.6.0-1`)
 
-Development builds (branches, `main`) are built for `linux/amd64` for speed; release builds are multi-arch.
+Development builds (branches, `main`) are built for `linux/amd64` for speed; release builds are multi-arch: `linux/amd64, linux/arm64`. `linux/riscv64` (published up to 1.6.0-1) was dropped: Alpine builds its riscv64 packages and the official `alpine` Docker image on slower hardware, so they land hours to days after the other architectures and repeatedly blocked the multi-arch build. The Dockerfile still supports it for local builds (`docker buildx build --platform linux/riscv64 .`).
 
 ## Pulling the newest dev image
 

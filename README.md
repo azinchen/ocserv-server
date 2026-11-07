@@ -33,7 +33,7 @@ OpenConnect VPN server ([ocserv](https://ocserv.gitlab.io/www/)) in a small self
 - **📊 Session accounting** — per-session times and traffic split per gateway and bypass pool ([details][wiki-sessions])
 - **🩺 Opt-in health monitor** — `HEALTHCHECK` for liveness, routing integrity and egress probes ([details][wiki-health])
 - **📵 IPv6 without leaks** — optional NAT66; dropped fail-closed when an upstream has no IPv6 ([details][wiki-ipv6])
-- **📦 Multi-arch, from source** — amd64 / arm64 / riscv64, ocserv built from source, supervised by s6-overlay
+- **📦 Multi-arch, from source** — amd64 / arm64, ocserv built from source, supervised by s6-overlay
 
 > **📖 [Full documentation on the Wiki][wiki-home]** — setup guides, ready-to-use configurations, feature guides, troubleshooting, FAQ, and architecture.
 
@@ -222,7 +222,7 @@ MIT — see [LICENSE](LICENSE).
 [dockerhub-stars]: https://img.shields.io/docker/stars/azinchen/ocserv-server?logo=docker&logoColor=white
 [dockerhub-size]: https://img.shields.io/docker/image-size/azinchen/ocserv-server/latest?logo=docker&logoColor=white
 [dockerhub-link]: https://hub.docker.com/r/azinchen/ocserv-server
-[multiarch-badge]: https://img.shields.io/badge/multi--arch-amd64%20%7C%20arm64%20%7C%20riscv64-blue?logo=docker&logoColor=white
+[multiarch-badge]: https://img.shields.io/badge/multi--arch-amd64%20%7C%20arm64-blue?logo=docker&logoColor=white
 
 <!-- Links: Wiki -->
 [wiki-home]: https://github.com/azinchen/ocserv-server/wiki
