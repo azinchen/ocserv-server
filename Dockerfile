@@ -14,7 +14,7 @@ RUN set -eux && \
         samurai=1.2-r8 \
         gperf=3.3-r0 \
         pkgconf=2.5.1-r0 \
-        gnutls-dev=3.8.13-r0 \
+        gnutls-dev=3.8.14-r0 \
         readline-dev=8.3.3-r1 \
         libtasn1-dev=4.21.0-r0 \
         talloc-dev=2.4.4-r1 \
@@ -149,8 +149,8 @@ LABEL org.opencontainers.image.title="OpenConnect VPN Server (ocserv) Docker con
       com.ocserv.documentation="https://ocserv.gitlab.io/www/manual.html"
 
 RUN apk --no-cache --no-progress add \
-    gnutls=3.8.13-r0 \
-    gnutls-utils=3.8.13-r0 \
+    gnutls=3.8.14-r0 \
+    gnutls-utils=3.8.14-r0 \
     p11-kit=0.26.2-r0 \
     libnl3=3.11.0-r0 \
     libseccomp=2.6.1-r0 \
