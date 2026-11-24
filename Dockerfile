@@ -159,7 +159,7 @@ RUN apk --no-cache --no-progress add \
     protobuf-c=1.5.2-r2 \
     talloc=2.4.4-r1 \
     ca-certificates=20261020-r0 \
-    shadow=4.18.0-r1 \
+    shadow=4.20.4-r0 \
     libcap=2.78-r0 \
     nftables=1.1.6-r1 \
     readline=8.3.3-r1
